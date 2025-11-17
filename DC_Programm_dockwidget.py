@@ -44,7 +44,9 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # http://doc.qt.io/qt-5/designer-using-a-ui-file.html
         # #widgets-and-dialogs-with-auto-connect
         self.setupUi(self)
-
+        self.exportButton.clicked.connect(self.on_export_clicked)
     def closeEvent(self, event):
         self.closingPlugin.emit()
         event.accept()
+    def on_export_clicked(self):
+        print("Export-Button funktioniert!")
