@@ -6,16 +6,33 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>232</width>
-    <height>141</height>
+    <width>245</width>
+    <height>367</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Snipper</string>
   </property>
   <widget class="QWidget" name="dockWidgetContents">
-   <layout class="QGridLayout" name="gridLayout">
-    <item row="1" column="0">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item>
+     <widget class="QPushButton" name="exportButton">
+      <property name="text">
+       <string>Export Layer</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QComboBox" name="layerComboBox"/>
+    </item>
+    <item>
+     <widget class="QPushButton" name="areaSelectButton">
+      <property name="text">
+       <string>Bereich auswählen</string>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="QLabel" name="label">
       <property name="text">
        <string>Replace this QLabel
@@ -24,16 +41,12 @@ plugin content.</string>
       </property>
      </widget>
     </item>
-    <item row="0" column="0">
-     <widget class="QPushButton" name="exportButton">
-      <property name="text">
-       <string>PushButton</string>
-      </property>
-     </widget>
-    </item>
    </layout>
   </widget>
  </widget>
+ <tabstops>
+  <tabstop>exportButton</tabstop>
+ </tabstops>
  <resources/>
  <connections/>
 </ui>

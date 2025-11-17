@@ -23,30 +23,151 @@
 """
 
 import os
-
 from qgis.PyQt import QtGui, QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal
+from qgis.core import QgsProject, QgsMapSettings, QgsRectangle, QgsWkbTypes, QgsGeometry
+from qgis.utils import iface
+from qgis.gui import QgsMapTool, QgsRubberBand
+from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QCursor, QColor
 
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'DC_Programm_dockwidget_base.ui'))
 
+class LayerSelectDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Layer auswählen")
+        self.setMinimumWidth(300)
+        vbox = QtWidgets.QVBoxLayout(self)
+        self.layer_checks = []
+        for layer in QgsProject.instance().mapLayers().values():
+            cb = QtWidgets.QCheckBox(layer.name(), self)
+            cb.layer_id = layer.id()
+            vbox.addWidget(cb)
+            self.layer_checks.append(cb)
+        btn = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        btn.accepted.connect(self.accept)
+        btn.rejected.connect(self.reject)
+        vbox.addWidget(btn)
+
+    def selected_layer_ids(self):
+        return [cb.layer_id for cb in self.layer_checks if cb.isChecked()]
+
+class RectangleByTwoPointsTool(QgsMapTool):
+    def __init__(self, canvas, callback):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.callback = callback
+        self.points = []
+        self.rb = None
+        self.setCursor(QCursor(Qt.CrossCursor))
+
+    def canvasPressEvent(self, event):
+        point = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
+        self.points.append(point)
+        if len(self.points) == 1:
+            self._reset_rubberband()
+        elif len(self.points) == 2:
+            p1 = self.points[0]
+            p2 = self.points[1]
+            rect = QgsRectangle(p1, p2)
+            self._reset_rubberband()
+            self.callback(rect)
+            self.points = []
+            self.deactivate()
+            self.canvas.unsetMapTool(self)
+
+    def canvasMoveEvent(self, event):
+        if len(self.points) == 1:
+            p1 = self.points[0]
+            p2 = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
+            rect = QgsRectangle(p1, p2)
+            poly = QgsGeometry.fromRect(rect)
+            self._draw_rubberband(poly)
+
+    def _draw_rubberband(self, poly):
+        if self.rb is None:
+            self.rb = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
+        self.rb.reset(QgsWkbTypes.PolygonGeometry)
+        color = QColor(0, 0, 0)
+        self.rb.setColor(color)
+        self.rb.setWidth(2)
+        self.rb.setLineStyle(Qt.DotLine)
+        self.rb.setToGeometry(poly, None)
+
+    def _reset_rubberband(self):
+        if self.rb:
+            self.rb.reset(QgsWkbTypes.PolygonGeometry)
+
+    def deactivate(self):
+        self._reset_rubberband()
+        QgsMapTool.deactivate(self)
 
 class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
-
     closingPlugin = pyqtSignal()
 
     def __init__(self, parent=None):
-        """Constructor."""
         super(SnipperDockWidget, self).__init__(parent)
-        # Set up the user interface from Designer.
-        # After setupUI you can access any designer object by doing
-        # self.<objectname>, and you can use autoconnect slots - see
-        # http://doc.qt.io/qt-5/designer-using-a-ui-file.html
-        # #widgets-and-dialogs-with-auto-connect
         self.setupUi(self)
+        self.layerComboBox.clear()
+        for layer in QgsProject.instance().mapLayers().values():
+            self.layerComboBox.addItem(layer.name(), layer.id())
         self.exportButton.clicked.connect(self.on_export_clicked)
+        self.areaSelectButton.clicked.connect(self.on_area_select_clicked)
+        self.selected_layers_for_export = []
+
     def closeEvent(self, event):
         self.closingPlugin.emit()
         event.accept()
+
     def on_export_clicked(self):
         print("Export-Button funktioniert!")
+        selected_layer_id = self.layerComboBox.currentData()
+        selected_layer = QgsProject.instance().mapLayer(selected_layer_id)
+        print('Gewählter Layer:', selected_layer.name())
+
+    def on_area_select_clicked(self):
+        # Popup-Dialog für Mehrfachauswahl!
+        dialog = LayerSelectDialog(self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self.selected_layers_for_export = dialog.selected_layer_ids()
+        if not self.selected_layers_for_export:
+            QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Layer auswählen!")
+            return
+        print("Gewählte Layer:", self.selected_layers_for_export)
+        self.rect_tool = RectangleByTwoPointsTool(
+            iface.mapCanvas(),
+            self.process_rectangle
+        )
+        iface.mapCanvas().setMapTool(self.rect_tool)
+
+    def process_rectangle(self, rectangle):
+        print(f"Koordinaten des Bereichs: {rectangle.toString()}")
+        for lid in self.selected_layers_for_export:
+            layer = QgsProject.instance().mapLayer(lid)
+            self.export_rectangle_layer_as_jpg(rectangle, layer)
+
+    def export_rectangle_layer_as_jpg(self, rectangle, layer):
+        canvas = iface.mapCanvas()
+        default_name = layer.name().replace(" ", "_") + ".jpg"
+        img_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, f"Exportiere Bild für {layer.name()}", default_name, "JPEG Files (*.jpg)")
+        if not img_path:
+            return
+        map_settings = QgsMapSettings()
+        map_settings.setExtent(rectangle)
+        map_settings.setOutputSize(canvas.size())
+        map_settings.setDestinationCrs(canvas.mapSettings().destinationCrs())
+        map_settings.setLayers([layer])
+        img = QtGui.QImage(canvas.size(), QtGui.QImage.Format_ARGB32)
+        img.fill(0)
+        painter = QtGui.QPainter(img)
+        from qgis.core import QgsMapRendererCustomPainterJob
+        job = QgsMapRendererCustomPainterJob(map_settings, painter)
+        job.start()
+        job.waitForFinished()
+        painter.end()
+        img.save(img_path, "JPG")
+        print(f"Bild gespeichert für {layer.name()} unter {img_path}")
+
