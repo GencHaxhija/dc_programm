@@ -24,12 +24,17 @@
 
 import os
 from qgis.PyQt import QtGui, QtWidgets, uic
-from qgis.PyQt.QtCore import pyqtSignal
-from qgis.core import QgsProject, QgsMapSettings, QgsRectangle, QgsWkbTypes, QgsGeometry
+from qgis.PyQt.QtCore import pyqtSignal, Qt, QSize, QRectF, QPointF
+from qgis.core import (
+    QgsProject, QgsMapSettings, QgsRectangle, QgsWkbTypes, QgsGeometry, 
+    QgsPointXY, QgsPrintLayout, QgsLayoutItemMap, QgsLayoutItemScaleBar, 
+    QgsLayoutItemPicture, QgsLayoutExporter, QgsLayoutPoint, QgsUnitTypes,
+    QgsLayoutSize, QgsLayoutItemLabel, QgsLayoutItemLegend, QgsLayoutItemPolyline,
+    QgsLegendStyle
+)
 from qgis.utils import iface
 from qgis.gui import QgsMapTool, QgsRubberBand
-from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtGui import QCursor, QColor
+from qgis.PyQt.QtGui import QCursor, QColor, QPolygonF
 
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'DC_Programm_dockwidget_base.ui'))
@@ -37,72 +42,308 @@ FORM_CLASS, _ = uic.loadUiType(os.path.join(
 class LayerSelectDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Layer auswählen")
-        self.setMinimumWidth(300)
-        vbox = QtWidgets.QVBoxLayout(self)
-        self.layer_checks = []
-        for layer in QgsProject.instance().mapLayers().values():
+        self.setWindowTitle("Export Einstellungen")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(650)
+        self.layout = QtWidgets.QVBoxLayout(self)
+        
+        # --- Mode Selection ---
+        self.gb_mode = QtWidgets.QGroupBox("Export Modus")
+        self.mode_layout = QtWidgets.QHBoxLayout(self.gb_mode)
+        self.rb_batch = QtWidgets.QRadioButton("Einzel-Export (Batch)")
+        self.rb_overlay = QtWidgets.QRadioButton("Overlay-Export (Basis + X)")
+        self.rb_layout = QtWidgets.QRadioButton("Layout-Bogen (Übersicht A3)")
+        self.rb_batch.setChecked(True)
+        self.mode_layout.addWidget(self.rb_batch)
+        self.mode_layout.addWidget(self.rb_overlay)
+        self.mode_layout.addWidget(self.rb_layout)
+        self.layout.addWidget(self.gb_mode)
+        
+        self.all_layers = sorted(QgsProject.instance().mapLayers().values(), key=lambda l: l.name())
+        
+        # --- Batch Selection UI ---
+        self.widget_batch = QtWidgets.QWidget()
+        batch_layout = QtWidgets.QVBoxLayout(self.widget_batch)
+        batch_layout.addWidget(QtWidgets.QLabel("<b>Layer auswählen (Mehrfachwahl):</b>"))
+        
+        self.batch_checks = []
+        
+        scroll_batch = QtWidgets.QScrollArea()
+        scroll_batch.setWidgetResizable(True)
+        scroll_content_batch = QtWidgets.QWidget()
+        scroll_layout_batch = QtWidgets.QVBoxLayout(scroll_content_batch)
+        
+        for layer in self.all_layers:
             cb = QtWidgets.QCheckBox(layer.name(), self)
             cb.layer_id = layer.id()
-            vbox.addWidget(cb)
-            self.layer_checks.append(cb)
-        btn = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        btn.accepted.connect(self.accept)
-        btn.rejected.connect(self.reject)
-        vbox.addWidget(btn)
+            scroll_layout_batch.addWidget(cb)
+            self.batch_checks.append(cb)
+            
+        scroll_batch.setWidget(scroll_content_batch)
+        batch_layout.addWidget(scroll_batch)
+        self.layout.addWidget(self.widget_batch)
+        
+        # --- Overlay Selection UI ---
+        self.widget_overlay = QtWidgets.QWidget()
+        overlay_layout = QtWidgets.QVBoxLayout(self.widget_overlay)
+        
+        # Base Layer
+        overlay_layout.addWidget(QtWidgets.QLabel("<b>Basis-Layer (100%):</b>"))
+        self.combo_base = QtWidgets.QComboBox()
+        for layer in self.all_layers:
+            self.combo_base.addItem(layer.name(), layer.id())
+        overlay_layout.addWidget(self.combo_base)
+        
+        # Overlay Layers (Multi-Select)
+        overlay_layout.addWidget(QtWidgets.QLabel("<b>Overlay-Layer (Mehrfachwahl):</b>"))
+        self.overlay_checks = []
+        
+        scroll_overlay = QtWidgets.QScrollArea()
+        scroll_overlay.setWidgetResizable(True)
+        scroll_content_overlay = QtWidgets.QWidget()
+        scroll_layout_overlay = QtWidgets.QVBoxLayout(scroll_content_overlay)
+        
+        for layer in self.all_layers:
+            cb = QtWidgets.QCheckBox(layer.name(), self)
+            cb.layer_id = layer.id()
+            scroll_layout_overlay.addWidget(cb)
+            self.overlay_checks.append(cb)
+            
+        scroll_overlay.setWidget(scroll_content_overlay)
+        overlay_layout.addWidget(scroll_overlay)
+        
+        # Opacity
+        h_opacity = QtWidgets.QHBoxLayout()
+        h_opacity.addWidget(QtWidgets.QLabel("Overlay Transparenz:"))
+        self.spin_opacity = QtWidgets.QSpinBox()
+        self.spin_opacity.setRange(0, 100)
+        self.spin_opacity.setValue(60)
+        self.spin_opacity.setSuffix(" %")
+        h_opacity.addWidget(self.spin_opacity)
+        overlay_layout.addLayout(h_opacity)
+        
+        self.layout.addWidget(self.widget_overlay)
+        self.widget_overlay.hide()
+        
+        # --- Layout Overview UI ---
+        self.widget_layout = QtWidgets.QWidget()
+        layout_form = QtWidgets.QVBoxLayout(self.widget_layout)
+        
+        # Project Info
+        form_info = QtWidgets.QFormLayout()
+        self.edit_title = QtWidgets.QLineEdit("Victorinox Parkhaus")
+        self.edit_number = QtWidgets.QLineEdit("1214")
+        self.edit_date = QtWidgets.QLineEdit("01.12.2025")
+        form_info.addRow("Projekttitel:", self.edit_title)
+        form_info.addRow("Projektnummer:", self.edit_number)
+        form_info.addRow("Datum:", self.edit_date)
+        layout_form.addLayout(form_info)
+        
+        # Base Layer (Layout Mode)
+        layout_form.addWidget(QtWidgets.QLabel("<b>Basis-Layer (100%):</b>"))
+        self.combo_base_layout = QtWidgets.QComboBox()
+        for layer in self.all_layers:
+            self.combo_base_layout.addItem(layer.name(), layer.id())
+        layout_form.addWidget(self.combo_base_layout)
+        
+        # Overlay Layers (Layout Mode)
+        layout_form.addWidget(QtWidgets.QLabel("<b>Overlay-Layer für Raster (Mehrfachwahl):</b>"))
+        self.layout_checks = []
+        scroll_layout_w = QtWidgets.QScrollArea()
+        scroll_layout_w.setWidgetResizable(True)
+        scroll_content_layout = QtWidgets.QWidget()
+        scroll_layout_l = QtWidgets.QVBoxLayout(scroll_content_layout)
+        
+        for layer in self.all_layers:
+            cb = QtWidgets.QCheckBox(layer.name(), self)
+            cb.layer_id = layer.id()
+            scroll_layout_l.addWidget(cb)
+            self.layout_checks.append(cb)
+            
+        scroll_layout_w.setWidget(scroll_content_layout)
+        layout_form.addWidget(scroll_layout_w)
 
-    def selected_layer_ids(self):
-        return [cb.layer_id for cb in self.layer_checks if cb.isChecked()]
+        # Opacity (Layout Mode)
+        h_opacity_layout = QtWidgets.QHBoxLayout()
+        h_opacity_layout.addWidget(QtWidgets.QLabel("Overlay Transparenz:"))
+        self.spin_opacity_layout = QtWidgets.QSpinBox()
+        self.spin_opacity_layout.setRange(0, 100)
+        self.spin_opacity_layout.setValue(60)
+        self.spin_opacity_layout.setSuffix(" %")
+        h_opacity_layout.addWidget(self.spin_opacity_layout)
+        layout_form.addLayout(h_opacity_layout)
+        
+        # Debug Mode
+        self.check_debug = QtWidgets.QCheckBox("Debug-Modus (Layout öffnen statt exportieren)")
+        self.check_debug.setChecked(False)
+        layout_form.addWidget(self.check_debug)
+        
+        self.layout.addWidget(self.widget_layout)
+        self.widget_layout.hide()
 
-class RectangleByTwoPointsTool(QgsMapTool):
-    def __init__(self, canvas, callback):
+        # --- Common Options ---
+        self.gb_opts = QtWidgets.QGroupBox("Optionen")
+        opts_layout = QtWidgets.QFormLayout(self.gb_opts)
+        
+        self.combo_format = QtWidgets.QComboBox()
+        self.combo_format.addItems(["PDF", "JPG", "PNG"]) # PDF default for layout
+        
+        self.combo_dpi = QtWidgets.QComboBox()
+        self.combo_dpi.addItems(["150 (Screen)", "300 (Print)", "600 (High Quality)"])
+        self.combo_dpi.setCurrentIndex(1) # Default 300
+        
+        self.check_decorations = QtWidgets.QCheckBox("Legende & Nordpfeil hinzufügen")
+        self.check_decorations.setChecked(True)
+        
+        opts_layout.addRow("Format:", self.combo_format)
+        opts_layout.addRow("Qualität (DPI):", self.combo_dpi)
+        opts_layout.addRow(self.check_decorations)
+        self.layout.addWidget(self.gb_opts)
+        
+        # --- Progress Bar ---
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.hide()
+        self.layout.addWidget(self.progress_bar)
+
+        # --- Buttons ---
+        self.btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        self.btn_box.accepted.connect(self.accept)
+        self.btn_box.rejected.connect(self.reject)
+        self.layout.addWidget(self.btn_box)
+        
+        # Connect signals
+        self.rb_batch.toggled.connect(self.toggle_mode)
+        self.rb_overlay.toggled.connect(self.toggle_mode)
+        self.rb_layout.toggled.connect(self.toggle_mode)
+
+    def toggle_mode(self):
+        if self.rb_batch.isChecked():
+            self.widget_batch.show()
+            self.widget_overlay.hide()
+            self.widget_layout.hide()
+            self.gb_opts.show()
+        elif self.rb_overlay.isChecked():
+            self.widget_batch.hide()
+            self.widget_overlay.show()
+            self.widget_layout.hide()
+            self.gb_opts.show()
+        elif self.rb_layout.isChecked():
+            self.widget_batch.hide()
+            self.widget_overlay.hide()
+            self.widget_layout.show()
+            self.gb_opts.show()
+
+    def get_mode(self):
+        if self.rb_overlay.isChecked(): return "overlay"
+        if self.rb_layout.isChecked(): return "layout"
+        return "batch"
+
+    def get_batch_layers(self):
+        return [cb.layer_id for cb in self.batch_checks if cb.isChecked()]
+        
+    def get_layout_config(self):
+        return {
+            "title": self.edit_title.text(),
+            "number": self.edit_number.text(),
+            "date": self.edit_date.text(),
+            "base_id": self.combo_base_layout.currentData(),
+            "overlay_ids": [cb.layer_id for cb in self.layout_checks if cb.isChecked()],
+            "opacity": self.spin_opacity_layout.value() / 100.0,
+            "debug": self.check_debug.isChecked()
+        }
+
+    def get_overlay_config(self):
+        return {
+            "base_id": self.combo_base.currentData(),
+            "overlay_ids": [cb.layer_id for cb in self.overlay_checks if cb.isChecked()],
+            "opacity": self.spin_opacity.value() / 100.0
+        }
+        
+    def get_format(self):
+        return self.combo_format.currentText()
+        
+    def get_dpi(self):
+        txt = self.combo_dpi.currentText() # "300 (Print)"
+        return int(txt.split()[0])
+        
+    def get_decorations(self):
+        return self.check_decorations.isChecked()
+        
+    def show_progress(self, show=True):
+        self.progress_bar.setVisible(show)
+        self.btn_box.setEnabled(not show)
+        QtWidgets.QApplication.processEvents()
+        
+    def update_progress(self, value, text=""):
+        self.progress_bar.setValue(value)
+        if text: self.progress_bar.setFormat(f"%p% - {text}")
+        QtWidgets.QApplication.processEvents()
+
+class FixedFrameTool(QgsMapTool):
+    def __init__(self, canvas, target_scale, callback):
         super().__init__(canvas)
         self.canvas = canvas
+        self.target_scale = target_scale
         self.callback = callback
-        self.points = []
         self.rb = None
-        self.setCursor(QCursor(Qt.CrossCursor))
+        self.setCursor(QCursor(Qt.BlankCursor))
+        self.half_width_map_units = 0
+        self.half_height_map_units = 0
+        self.update_rect_size()
 
-    def canvasPressEvent(self, event):
-        point = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
-        self.points.append(point)
-        if len(self.points) == 1:
-            self._reset_rubberband()
-        elif len(self.points) == 2:
-            p1 = self.points[0]
-            p2 = self.points[1]
-            rect = QgsRectangle(p1, p2)
-            self._reset_rubberband()
-            self.callback(rect)
-            self.points = []
-            self.deactivate()
-            self.canvas.unsetMapTool(self)
+    def set_target_scale(self, scale):
+        self.target_scale = scale
+        self.update_rect_size()
+
+    def update_rect_size(self):
+        # Target size: 15cm width x 12cm height
+        world_width_m = 0.15 * self.target_scale
+        world_height_m = 0.12 * self.target_scale
+        
+        self.half_width_map_units = world_width_m / 2
+        self.half_height_map_units = world_height_m / 2
 
     def canvasMoveEvent(self, event):
-        if len(self.points) == 1:
-            p1 = self.points[0]
-            p2 = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
-            rect = QgsRectangle(p1, p2)
-            poly = QgsGeometry.fromRect(rect)
-            self._draw_rubberband(poly)
+        center = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
+        rect = QgsRectangle(
+            center.x() - self.half_width_map_units,
+            center.y() - self.half_height_map_units,
+            center.x() + self.half_width_map_units,
+            center.y() + self.half_height_map_units
+        )
+        self._draw_rubberband(rect)
 
-    def _draw_rubberband(self, poly):
+    def canvasReleaseEvent(self, event):
+        center = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
+        rect = QgsRectangle(
+            center.x() - self.half_width_map_units,
+            center.y() - self.half_height_map_units,
+            center.x() + self.half_width_map_units,
+            center.y() + self.half_height_map_units
+        )
+        self.callback(rect)
+        self.deactivate()
+        self.canvas.unsetMapTool(self)
+
+    def _draw_rubberband(self, rect):
         if self.rb is None:
             self.rb = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
-        self.rb.reset(QgsWkbTypes.PolygonGeometry)
-        color = QColor(0, 0, 0)
-        self.rb.setColor(color)
-        self.rb.setWidth(2)
-        self.rb.setLineStyle(Qt.DotLine)
+            self.rb.setColor(QColor(255, 0, 0))
+            self.rb.setWidth(2)
+            # Transparent red fill (alpha 40)
+            self.rb.setFillColor(QColor(255, 64, 0, 40))
+            self.rb.setLineStyle(Qt.SolidLine)
+
+        poly = QgsGeometry.fromRect(rect)
         self.rb.setToGeometry(poly, None)
 
-    def _reset_rubberband(self):
-        if self.rb:
-            self.rb.reset(QgsWkbTypes.PolygonGeometry)
-
     def deactivate(self):
-        self._reset_rubberband()
-        QgsMapTool.deactivate(self)
+        if self.rb:
+            self.canvas.scene().removeItem(self.rb)
+            self.rb = None
+        super().deactivate()
 
 class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     closingPlugin = pyqtSignal()
@@ -110,64 +351,457 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     def __init__(self, parent=None):
         super(SnipperDockWidget, self).__init__(parent)
         self.setupUi(self)
-        self.layerComboBox.clear()
-        for layer in QgsProject.instance().mapLayers().values():
-            self.layerComboBox.addItem(layer.name(), layer.id())
+        
+        # Add Scale Selector
+        self.scale_combo = QtWidgets.QComboBox()
+        self.scale_combo.addItems(["1:200", "1:500", "1:1000", "1:1500", "1:2000", "1:2500", "1:5000"])
+        self.scale_combo.setCurrentText("1:500") # Default
+        self.scale_combo.currentIndexChanged.connect(self.on_scale_changed)
+        
+        parent_layout = self.areaSelectButton.parent().layout()
+        if parent_layout:
+            idx = parent_layout.indexOf(self.areaSelectButton)
+            h_layout = QtWidgets.QHBoxLayout()
+            h_layout.addWidget(QtWidgets.QLabel("Maßstab:"))
+            h_layout.addWidget(self.scale_combo)
+            parent_layout.insertLayout(idx, h_layout)
+            
         self.exportButton.clicked.connect(self.on_export_clicked)
         self.areaSelectButton.clicked.connect(self.on_area_select_clicked)
-        self.selected_layers_for_export = []
+        
+        self.current_geometry = None
+        self.selection_rb = None
+        self.rect_tool = None
 
     def closeEvent(self, event):
+        self._clear_selection_visual()
         self.closingPlugin.emit()
         event.accept()
 
-    def on_export_clicked(self):
-        print("Export-Button funktioniert!")
-        selected_layer_id = self.layerComboBox.currentData()
-        selected_layer = QgsProject.instance().mapLayer(selected_layer_id)
-        print('Gewählter Layer:', selected_layer.name())
+    def get_selected_scale(self):
+        txt = self.scale_combo.currentText()
+        try:
+            return float(txt.split(":")[1])
+        except:
+            return 500.0
+
+    def on_scale_changed(self):
+        scale = self.get_selected_scale()
+        if self.rect_tool:
+            self.rect_tool.set_target_scale(scale)
+        if self.current_geometry:
+            self._clear_selection_visual()
+            self.current_geometry = None
+            QtWidgets.QMessageBox.information(self, "Info", "Maßstab geändert. Bitte Bereich neu auswählen.")
 
     def on_area_select_clicked(self):
-        # Popup-Dialog für Mehrfachauswahl!
-        dialog = LayerSelectDialog(self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
-            return
-        self.selected_layers_for_export = dialog.selected_layer_ids()
-        if not self.selected_layers_for_export:
-            QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Layer auswählen!")
-            return
-        print("Gewählte Layer:", self.selected_layers_for_export)
-        self.rect_tool = RectangleByTwoPointsTool(
+        self._clear_selection_visual()
+        scale = self.get_selected_scale()
+        self.rect_tool = FixedFrameTool(
             iface.mapCanvas(),
-            self.process_rectangle
+            scale,
+            self.process_selection
         )
         iface.mapCanvas().setMapTool(self.rect_tool)
 
-    def process_rectangle(self, rectangle):
-        print(f"Koordinaten des Bereichs: {rectangle.toString()}")
-        for lid in self.selected_layers_for_export:
-            layer = QgsProject.instance().mapLayer(lid)
-            self.export_rectangle_layer_as_jpg(rectangle, layer)
+    def process_selection(self, rectangle):
+        self.current_geometry = rectangle
+        self._draw_persistent_selection(rectangle)
+        
+    def _draw_persistent_selection(self, rect):
+        self._clear_selection_visual()
+        self.selection_rb = QgsRubberBand(iface.mapCanvas(), QgsWkbTypes.PolygonGeometry)
+        self.selection_rb.setColor(QColor(255, 0, 0))
+        self.selection_rb.setWidth(2)
+        self.selection_rb.setFillColor(QColor(255, 64, 0, 40))
+        self.selection_rb.setToGeometry(QgsGeometry.fromRect(rect), None)
 
-    def export_rectangle_layer_as_jpg(self, rectangle, layer):
-        canvas = iface.mapCanvas()
-        default_name = layer.name().replace(" ", "_") + ".jpg"
-        img_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, f"Exportiere Bild für {layer.name()}", default_name, "JPEG Files (*.jpg)")
-        if not img_path:
+    def _clear_selection_visual(self):
+        if self.selection_rb:
+            iface.mapCanvas().scene().removeItem(self.selection_rb)
+            self.selection_rb = None
+
+    def on_export_clicked(self):
+        if not self.current_geometry:
+            QtWidgets.QMessageBox.warning(self, "Fehler", "Bitte wählen Sie zuerst einen Bereich aus!")
             return
-        map_settings = QgsMapSettings()
-        map_settings.setExtent(rectangle)
-        map_settings.setOutputSize(canvas.size())
-        map_settings.setDestinationCrs(canvas.mapSettings().destinationCrs())
-        map_settings.setLayers([layer])
-        img = QtGui.QImage(canvas.size(), QtGui.QImage.Format_ARGB32)
-        img.fill(0)
-        painter = QtGui.QPainter(img)
-        from qgis.core import QgsMapRendererCustomPainterJob
-        job = QgsMapRendererCustomPainterJob(map_settings, painter)
-        job.start()
-        job.waitForFinished()
-        painter.end()
-        img.save(img_path, "JPG")
-        print(f"Bild gespeichert für {layer.name()} unter {img_path}")
 
+        # 1. Export Settings Dialog
+        dialog = LayerSelectDialog(self)
+        # We execute the dialog, but we want to keep it open during export for progress bar.
+        # So we use a custom approach: if Accepted, we run logic, then close.
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+            
+        # Re-open dialog for progress? Or just use it before it closes?
+        # exec_() blocks. Once it returns, the dialog is hidden.
+        # We need to implement the export logic *inside* the dialog or pass the dialog to the logic.
+        # Let's refactor slightly: We gather inputs, then show a progress dialog or use the main window status bar.
+        # User asked for a "loading bar like Microsoft download".
+        # Let's create a simple QProgressDialog.
+        
+        mode = dialog.get_mode()
+        fmt = dialog.get_format()
+        dpi = dialog.get_dpi()
+        decorations = dialog.get_decorations()
+        scale = self.get_selected_scale()
+
+        # 2. Directory Selection
+        out_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Speicherort wählen")
+        if not out_dir:
+            return
+
+        # Setup Progress Dialog
+        progress = QtWidgets.QProgressDialog("Exportiere...", "Abbrechen", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        # 3. Export Logic
+        if mode == "batch":
+            selected_ids = dialog.get_batch_layers()
+            if not selected_ids:
+                QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Layer auswählen!")
+                return
+            
+            total = len(selected_ids)
+            progress.setMaximum(total)
+            
+            count = 0
+            for i, lid in enumerate(selected_ids):
+                if progress.wasCanceled(): break
+                layer = QgsProject.instance().mapLayer(lid)
+                if layer:
+                    progress.setLabelText(f"Exportiere Layer: {layer.name()}")
+                    self.export_layout(
+                        layers=[layer], 
+                        opacities=[1.0], 
+                        rectangle=self.current_geometry, 
+                        scale=scale, 
+                        out_dir=out_dir, 
+                        fmt=fmt, 
+                        dpi=dpi, 
+                        decorations=decorations,
+                        filename_prefix=layer.name()
+                    )
+                    count += 1
+                progress.setValue(i + 1)
+            
+            if not progress.wasCanceled():
+                QtWidgets.QMessageBox.information(self, "Erfolg", f"{count} Dateien wurden exportiert.")
+
+        elif mode == "overlay":
+            cfg = dialog.get_overlay_config()
+            base_layer = QgsProject.instance().mapLayer(cfg["base_id"])
+            overlay_ids = cfg["overlay_ids"]
+            
+            if not base_layer: return
+            if not overlay_ids:
+                QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Overlay-Layer auswählen!")
+                return
+
+            total = len(overlay_ids)
+            progress.setMaximum(total)
+
+            count = 0
+            for i, ov_id in enumerate(overlay_ids):
+                if progress.wasCanceled(): break
+                overlay_layer = QgsProject.instance().mapLayer(ov_id)
+                if overlay_layer:
+                    progress.setLabelText(f"Exportiere Overlay: {overlay_layer.name()}")
+                    self.export_layout(
+                        layers=[base_layer, overlay_layer],
+                        opacities=[1.0, cfg["opacity"]],
+                        rectangle=self.current_geometry,
+                        scale=scale,
+                        out_dir=out_dir,
+                        fmt=fmt,
+                        dpi=dpi,
+                        decorations=decorations,
+                        filename_prefix=f"Overlay_{base_layer.name()}_{overlay_layer.name()}"
+                    )
+                    count += 1
+                progress.setValue(i + 1)
+            
+            if not progress.wasCanceled():
+                QtWidgets.QMessageBox.information(self, "Erfolg", f"{count} Overlay-Bilder erfolgreich exportiert.")
+            
+        elif mode == "layout":
+            cfg = dialog.get_layout_config()
+            base_layer = QgsProject.instance().mapLayer(cfg["base_id"])
+            overlay_ids = cfg["overlay_ids"]
+            
+            if not base_layer: return
+            if not overlay_ids:
+                QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Overlay-Layer auswählen!")
+                return
+            
+            progress.setMaximum(0) # Indeterminate for single file generation
+            progress.setLabelText("Generiere Layout-Bogen...")
+            
+            result = self.export_overview_layout(
+                base_layer=base_layer,
+                overlay_ids=overlay_ids,
+                opacity=cfg["opacity"],
+                info=cfg,
+                rectangle=self.current_geometry,
+                scale=scale,
+                out_dir=out_dir,
+                fmt=fmt,
+                dpi=dpi,
+                debug=cfg["debug"]
+            )
+            progress.setValue(100)
+            
+            if cfg["debug"]:
+                QtWidgets.QMessageBox.information(self, "Debug", "Layout wurde geöffnet. Bitte prüfe die Positionierung und schicke mir Screenshots!")
+            else:
+                QtWidgets.QMessageBox.information(self, "Erfolg", "Layout-Bogen wurde erstellt.")
+        
+        progress.close()
+
+    def export_layout(self, layers, opacities, rectangle, scale, out_dir, fmt, dpi, decorations, filename_prefix):
+        # Create a print layout
+        project = QgsProject.instance()
+        layout = QgsPrintLayout(project)
+        layout.initializeDefaults()
+        
+        # Set page size to 150mm x 120mm
+        page = layout.pageCollection().pages()[0]
+        page.setPageSize(QgsLayoutSize(150, 120, QgsUnitTypes.LayoutMillimeters))
+        
+        # Add Maps (Stacked)
+        # We add them in order. First layer is bottom.
+        linked_map = None
+        
+        for i, layer in enumerate(layers):
+            map_item = QgsLayoutItemMap(layout)
+            map_item.setRect(QRectF(0, 0, 150, 120)) # Full page
+            map_item.setLayers([layer])
+            map_item.setExtent(rectangle)
+            map_item.setScale(scale)
+            map_item.setBackgroundColor(QColor(255, 255, 255, 0)) # Transparent
+            
+            # Set Opacity
+            # QgsLayoutItemMap doesn't have simple opacity setter for content, 
+            # but we can set item opacity.
+            map_item.setItemOpacity(opacities[i])
+            
+            layout.addLayoutItem(map_item)
+            if i == 0:
+                linked_map = map_item # Link decorations to base map
+        
+        # Add Decorations
+        if decorations and linked_map:
+            # Scale Bar
+            scale_bar = QgsLayoutItemScaleBar(layout)
+            scale_bar.setStyle('Single Box')
+            scale_bar.setLinkedMap(linked_map)
+            scale_bar.applyDefaultSize()
+            scale_bar.attemptMove(QgsLayoutPoint(5, 110, QgsUnitTypes.LayoutMillimeters))
+            layout.addLayoutItem(scale_bar)
+            
+            # North Arrow
+            arrow = QgsLayoutItemPicture(layout)
+            arrow.setPicturePath(":/images/north_arrows/layout_default_north_arrow.svg")
+            arrow.attemptResize(QgsLayoutSize(10, 10, QgsUnitTypes.LayoutMillimeters))
+            arrow.attemptMove(QgsLayoutPoint(135, 5, QgsUnitTypes.LayoutMillimeters))
+            layout.addLayoutItem(arrow)
+            
+            # Label
+            label = QgsLayoutItemLabel(layout)
+            label.setText(filename_prefix)
+            label.setFont(QtGui.QFont("Arial", 10))
+            label.adjustSizeToText()
+            label.attemptMove(QgsLayoutPoint(5, 5, QgsUnitTypes.LayoutMillimeters))
+            layout.addLayoutItem(label)
+
+        # Export
+        safe_name = "".join([c for c in filename_prefix if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
+        
+        exporter = QgsLayoutExporter(layout)
+        
+        if fmt == "PDF":
+            filename = f"{safe_name}.pdf"
+            path = os.path.join(out_dir, filename)
+            settings = QgsLayoutExporter.PdfExportSettings()
+            settings.dpi = dpi
+            exporter.exportToPdf(path, settings)
+        elif fmt == "PNG":
+            filename = f"{safe_name}.png"
+            path = os.path.join(out_dir, filename)
+            settings = QgsLayoutExporter.ImageExportSettings()
+            settings.dpi = dpi
+            exporter.exportToImage(path, settings)
+        else: # JPG
+            filename = f"{safe_name}.jpg"
+            path = os.path.join(out_dir, filename)
+            settings = QgsLayoutExporter.ImageExportSettings()
+            settings.dpi = dpi
+            exporter.exportToImage(path, settings)
+            
+        print(f"Exportiert: {path}")
+
+    def export_overview_layout(self, base_layer, overlay_ids, opacity, info, rectangle, scale, out_dir, fmt, dpi, debug=False):
+        project = QgsProject.instance()
+        layout = QgsPrintLayout(project)
+        layout.initializeDefaults()
+
+        # A3 Landscape
+        page = layout.pageCollection().pages()[0]
+        page.setPageSize(QgsLayoutSize(420, 297, QgsUnitTypes.LayoutMillimeters))
+
+        # Margins and Footer
+        margin = 10
+        footer_height = 30
+        content_width = 420 - (2 * margin)
+        content_height = 297 - (2 * margin) - footer_height
+
+        # Grid Calculation
+        num_layers = len(overlay_ids)
+        if num_layers <= 4:
+            rows, cols = 1, num_layers
+        elif num_layers <= 8:
+            rows, cols = 2, 4
+        else:
+            rows, cols = 3, 4 # Max 12
+    
+        cell_width = content_width / cols
+        cell_height = content_height / rows
+
+        # Place Layers
+        for i, lid in enumerate(overlay_ids):
+            if i >= rows * cols: break
+    
+            overlay_layer = project.mapLayer(lid)
+            if not overlay_layer: continue
+    
+            row = i // cols
+            col = i % cols
+    
+            x = margin + (col * cell_width)
+            y = margin + (row * cell_height)
+    
+            title_h = 5
+            legend_h = 25
+            map_h = cell_height - title_h - legend_h
+    
+            # Title
+            label = QgsLayoutItemLabel(layout)
+            label.setText(overlay_layer.name())
+            label.setFont(QtGui.QFont("Arial", 10, QtGui.QFont.Bold))
+            label.adjustSizeToText()
+            label.attemptMove(QgsLayoutPoint(x, y, QgsUnitTypes.LayoutMillimeters))
+            layout.addLayoutItem(label)
+    
+            # *** KORREKTUR: Map (Base) ***
+            map_base = QgsLayoutItemMap(layout)
+            layout.addLayoutItem(map_base)  # ZUERST hinzufügen!
+            map_base.attemptMove(QgsLayoutPoint(x, y + title_h, QgsUnitTypes.LayoutMillimeters))
+            map_base.attemptResize(QgsLayoutSize(cell_width - 2, map_h, QgsUnitTypes.LayoutMillimeters))
+            map_base.setLayers([base_layer])
+            map_base.setExtent(rectangle)
+            map_base.setScale(scale)
+            map_base.setFrameEnabled(True)
+    
+            # *** KORREKTUR: Map (Overlay) ***
+            map_overlay = QgsLayoutItemMap(layout)
+            layout.addLayoutItem(map_overlay)  # ZUERST hinzufügen!
+            map_overlay.attemptMove(QgsLayoutPoint(x, y + title_h, QgsUnitTypes.LayoutMillimeters))
+            map_overlay.attemptResize(QgsLayoutSize(cell_width - 2, map_h, QgsUnitTypes.LayoutMillimeters))
+            map_overlay.setLayers([overlay_layer])
+            map_overlay.setExtent(rectangle)
+            map_overlay.setScale(scale)
+            map_overlay.setBackgroundColor(QColor(255, 255, 255, 0))
+            map_overlay.setItemOpacity(opacity)
+    
+            # Legend (for Overlay only)
+            legend = QgsLayoutItemLegend(layout)
+            legend.setLinkedMap(map_overlay)
+            legend.setAutoUpdateModel(False)
+            root = legend.model().rootGroup()
+            root.clear()
+            root.addLayer(overlay_layer)
+    
+            legend.setSymbolHeight(4)
+            legend.setSymbolWidth(4)
+            legend.setStyleFont(QgsLegendStyle.SymbolLabel, QtGui.QFont("Arial", 8))
+            legend.attemptMove(QgsLayoutPoint(x, y + title_h + map_h + 1, QgsUnitTypes.LayoutMillimeters))
+            legend.attemptResize(QgsLayoutSize(cell_width, legend_h, QgsUnitTypes.LayoutMillimeters))
+            layout.addLayoutItem(legend)
+
+    # --- Footer --- (ACHTUNG: Korrekte Einrückung = 4 Leerzeichen!)
+        footer_y = 297 - margin - footer_height
+
+    # Line separator
+        line = QgsLayoutItemPolyline(layout)
+        nodes = QPolygonF()
+        nodes.append(QPointF(margin, footer_y))
+        nodes.append(QPointF(420-margin, footer_y))
+        line.setNodes(nodes)
+        layout.addLayoutItem(line)
+
+    # Logo
+        logo_label = QgsLayoutItemLabel(layout)
+        logo_label.setText("BSS ARCHITEKTEN")
+        logo_label.setFont(QtGui.QFont("Arial", 16, QtGui.QFont.Bold))
+        logo_label.adjustSizeToText()
+        logo_label.attemptMove(QgsLayoutPoint(margin, footer_y + 5, QgsUnitTypes.LayoutMillimeters))
+        layout.addLayoutItem(logo_label)
+
+    # Project Info
+        info_text = f"{info['number']} / {info['title']}\nDatum: {info['date']}\nMassstab: 1:{int(scale)}"
+        info_label = QgsLayoutItemLabel(layout)
+        info_label.setText(info_text)
+        info_label.setFont(QtGui.QFont("Arial", 10))
+        info_label.adjustSizeToText()
+        info_label.attemptMove(QgsLayoutPoint(margin + 100, footer_y + 5, QgsUnitTypes.LayoutMillimeters))
+        layout.addLayoutItem(info_label)
+
+    # North Arrow
+        arrow = QgsLayoutItemPicture(layout)
+        arrow.setPicturePath(":/images/north_arrows/layout_default_north_arrow.svg")
+        arrow.attemptResize(QgsLayoutSize(15, 15, QgsUnitTypes.LayoutMillimeters))
+        arrow.attemptMove(QgsLayoutPoint(420 - margin - 20, footer_y + 5, QgsUnitTypes.LayoutMillimeters))
+        layout.addLayoutItem(arrow)
+
+    # Export or Open
+        if debug:
+            # Layout Namen setzen
+            layout_name = f"Debug_Layout_{info['title']}"
+            layout.setName(layout_name)
+            
+            # Zum Manager hinzufügen
+            project.layoutManager().addLayout(layout)
+        
+            # Hole Layout vom Manager zurück (frische Referenz)
+            from qgis.PyQt.QtCore import QTimer
+        
+            def open_layout():
+                fresh = project.layoutManager().layoutByName(layout_name)
+                if fresh:
+                    iface.openLayoutDesigner(fresh)
+                    print("Layout geöffnet im Debug-Modus")
+                else:
+                    print("FEHLER: Layout konnte nicht abgerufen werden")
+        
+            # Verzögertes Öffnen (100ms warten)
+            QTimer.singleShot(100, open_layout)
+            return layout
+        else:
+            safe_title = "".join([c for c in info['title'] if c.isalnum() or c in (' ', '-', '_')]).strip()
+            filename = f"Layout_{safe_title}.{fmt.lower()}"
+            path = os.path.join(out_dir, filename)
+        
+            exporter = QgsLayoutExporter(layout)
+            if fmt == "PDF":
+                settings = QgsLayoutExporter.PdfExportSettings()
+                settings.dpi = dpi
+                exporter.exportToPdf(path, settings)
+            else:
+                settings = QgsLayoutExporter.ImageExportSettings()
+                settings.dpi = dpi
+                exporter.exportToImage(path, settings)
+            
+            print(f"Layout exportiert: {path}")
+            return None
