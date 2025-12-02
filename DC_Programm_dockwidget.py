@@ -25,12 +25,13 @@
 import os
 from qgis.PyQt import QtGui, QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QSize, QRectF, QPointF
+from qgis.PyQt.QtXml import QDomDocument
 from qgis.core import (
     QgsProject, QgsMapSettings, QgsRectangle, QgsWkbTypes, QgsGeometry, 
     QgsPointXY, QgsPrintLayout, QgsLayoutItemMap, QgsLayoutItemScaleBar, 
     QgsLayoutItemPicture, QgsLayoutExporter, QgsLayoutPoint, QgsUnitTypes,
     QgsLayoutSize, QgsLayoutItemLabel, QgsLayoutItemLegend, QgsLayoutItemPolyline,
-    QgsLegendStyle
+    QgsLegendStyle, QgsReadWriteContext
 )
 from qgis.utils import iface
 from qgis.gui import QgsMapTool, QgsRubberBand
@@ -129,39 +130,72 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.widget_layout = QtWidgets.QWidget()
         layout_form = QtWidgets.QVBoxLayout(self.widget_layout)
         
-        # Project Info
-        form_info = QtWidgets.QFormLayout()
-        self.edit_title = QtWidgets.QLineEdit("Victorinox Parkhaus")
-        self.edit_number = QtWidgets.QLineEdit("1214")
-        self.edit_date = QtWidgets.QLineEdit("01.12.2025")
-        form_info.addRow("Projekttitel:", self.edit_title)
-        form_info.addRow("Projektnummer:", self.edit_number)
-        form_info.addRow("Datum:", self.edit_date)
-        layout_form.addLayout(form_info)
-        
-        # Base Layer (Layout Mode)
-        layout_form.addWidget(QtWidgets.QLabel("<b>Basis-Layer (100%):</b>"))
+        # Template Selection
+        layout_form.addWidget(QtWidgets.QLabel("<b>Layout-Vorlage (.qpt):</b>"))
+        h_tmpl = QtWidgets.QHBoxLayout()
+        self.line_template = QtWidgets.QLineEdit()
+        self.line_template.setPlaceholderText("Standard (Automatisch generiert)")
+        self.btn_template = QtWidgets.QPushButton("...")
+        self.btn_template.setFixedWidth(30)
+        self.btn_template.clicked.connect(self.select_template)
+        h_tmpl.addWidget(self.line_template)
+        h_tmpl.addWidget(self.btn_template)
+        layout_form.addLayout(h_tmpl)
+
+        # Base Layer (Layout Mode) - RESTORED
+        layout_form.addWidget(QtWidgets.QLabel("<b>Basis-Layer (Hintergrund):</b>"))
         self.combo_base_layout = QtWidgets.QComboBox()
         for layer in self.all_layers:
             self.combo_base_layout.addItem(layer.name(), layer.id())
         layout_form.addWidget(self.combo_base_layout)
+
+        # Overlay Layers (Layout Mode) - EXPLICIT DROPDOWNS
+        layout_form.addWidget(QtWidgets.QLabel("<b>Overlay-Layer Zuweisung:</b>"))
         
-        # Overlay Layers (Layout Mode)
-        layout_form.addWidget(QtWidgets.QLabel("<b>Overlay-Layer für Raster (Mehrfachwahl):</b>"))
-        self.layout_checks = []
-        scroll_layout_w = QtWidgets.QScrollArea()
-        scroll_layout_w.setWidgetResizable(True)
-        scroll_content_layout = QtWidgets.QWidget()
-        scroll_layout_l = QtWidgets.QVBoxLayout(scroll_content_layout)
+        self.map_combos = []
+        grid_overlays = QtWidgets.QGridLayout()
         
-        for layer in self.all_layers:
-            cb = QtWidgets.QCheckBox(layer.name(), self)
-            cb.layer_id = layer.id()
-            scroll_layout_l.addWidget(cb)
-            self.layout_checks.append(cb)
+        # Create 8 Combos
+        for i in range(8):
+            lbl = QtWidgets.QLabel(f"MainMap {i+1}:")
+            combo = QtWidgets.QComboBox()
+            combo.addItem("- Leer -", None)
+            for layer in self.all_layers:
+                combo.addItem(layer.name(), layer.id())
             
-        scroll_layout_w.setWidget(scroll_content_layout)
-        layout_form.addWidget(scroll_layout_w)
+            self.map_combos.append(combo)
+            
+            # Grid layout: 2 columns
+            row = i // 2
+            col = (i % 2) * 2 # Label, Combo, Label, Combo
+            
+            grid_overlays.addWidget(lbl, row, col)
+            grid_overlays.addWidget(combo, row, col+1)
+            
+        layout_form.addLayout(grid_overlays)
+
+        # Text Inputs
+        layout_form.addWidget(QtWidgets.QLabel("<b>Beschriftung:</b>"))
+        form_info = QtWidgets.QFormLayout()
+        
+        self.edit_kuerzel = QtWidgets.QLineEdit()
+        self.edit_kuerzel.setPlaceholderText("Gez: Kürzel / Gep: KürzelGeprüft")
+        
+        self.edit_date = QtWidgets.QLineEdit()
+        self.edit_date.setPlaceholderText("Dat.: Datum / Rev.")
+        
+        self.edit_title = QtWidgets.QLineEdit()
+        self.edit_title.setPlaceholderText("Projektnummer/Projekttitel")
+        
+        self.edit_project_name = QtWidgets.QLineEdit()
+        self.edit_project_name.setPlaceholderText("Projektname")
+        
+        form_info.addRow("Kürzel:", self.edit_kuerzel)
+        form_info.addRow("Datum:", self.edit_date)
+        form_info.addRow("Titel:", self.edit_title)
+        form_info.addRow("Projekt:", self.edit_project_name)
+        
+        layout_form.addLayout(form_info)
 
         # Opacity (Layout Mode)
         h_opacity_layout = QtWidgets.QHBoxLayout()
@@ -244,15 +278,30 @@ class LayerSelectDialog(QtWidgets.QDialog):
         return [cb.layer_id for cb in self.batch_checks if cb.isChecked()]
         
     def get_layout_config(self):
+        # Collect selected IDs from the 8 combos
+        selected_overlays = []
+        for combo in self.map_combos:
+            selected_overlays.append(combo.currentData()) # Can be None
+            
         return {
-            "title": self.edit_title.text(),
-            "number": self.edit_number.text(),
+            "kuerzel": self.edit_kuerzel.text(),
             "date": self.edit_date.text(),
+            "title": self.edit_title.text(),
+            "project_name": self.edit_project_name.text(),
             "base_id": self.combo_base_layout.currentData(),
-            "overlay_ids": [cb.layer_id for cb in self.layout_checks if cb.isChecked()],
+            "overlay_ids": selected_overlays, # List of 8 IDs (or None)
             "opacity": self.spin_opacity_layout.value() / 100.0,
-            "debug": self.check_debug.isChecked()
+            "debug": self.check_debug.isChecked(),
+            "template": self.line_template.text()
         }
+
+    def select_template(self):
+        default_dir = os.path.join(os.path.dirname(__file__), 'templates')
+        if not os.path.exists(default_dir):
+            os.makedirs(default_dir)
+        fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Vorlage wählen", default_dir, "QGIS Layout Templates (*.qpt)")
+        if fname:
+            self.line_template.setText(fname)
 
     def get_overlay_config(self):
         return {
@@ -531,16 +580,17 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             base_layer = QgsProject.instance().mapLayer(cfg["base_id"])
             overlay_ids = cfg["overlay_ids"]
             
-            if not base_layer: return
-            if not overlay_ids:
-                QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Overlay-Layer auswählen!")
-                return
+            if not base_layer: 
+                 QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte Basis-Layer auswählen!")
+                 return
+            # Allow empty overlay_ids (user might want empty slots)
+            # if not overlay_ids: ...
             
             progress.setMaximum(0) # Indeterminate for single file generation
             progress.setLabelText("Generiere Layout-Bogen...")
             
             result = self.export_overview_layout(
-                base_layer=base_layer,
+                base_layer=base_layer, 
                 overlay_ids=overlay_ids,
                 opacity=cfg["opacity"],
                 info=cfg,
@@ -646,129 +696,120 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         project = QgsProject.instance()
         layout = QgsPrintLayout(project)
         layout.initializeDefaults()
+        
+        template_path = info.get('template')
+        
+        # Try to resolve template path
+        if template_path:
+            if not os.path.exists(template_path):
+                # Try in templates dir
+                default_dir = os.path.join(os.path.dirname(__file__), 'templates')
+                candidate = os.path.join(default_dir, template_path)
+                if os.path.exists(candidate):
+                    template_path = candidate
+                elif os.path.exists(candidate + ".qpt"):
+                    template_path = candidate + ".qpt"
+            
+            if not os.path.exists(template_path):
+                QtWidgets.QMessageBox.warning(None, "Fehler", f"Vorlage nicht gefunden:\n{template_path}")
+                return None
 
-        # A3 Landscape
-        page = layout.pageCollection().pages()[0]
-        page.setPageSize(QgsLayoutSize(420, 297, QgsUnitTypes.LayoutMillimeters))
+        if template_path:
+            # --- Template Mode ---
+            print(f"Lade Vorlage: {template_path}")
+            with open(template_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            doc = QDomDocument()
+            doc.setContent(content)
+            loaded = layout.loadFromTemplate(doc, QgsReadWriteContext())
+            if not loaded:
+                 QtWidgets.QMessageBox.warning(None, "Fehler", "Vorlage konnte nicht geladen werden (ungültiges Format?).")
+                 return None
+            
+            # 1. Update Text Labels
+            # Map of ID -> Text Value
+            # Based on user request and previous context:
+            # Kürzel -> "Gez"
+            # Date -> "Dat"
+            # Title -> "project_nr" (or "Title"?) -> User said "Projektnummer/Projekttitel" for Title field.
+            # ProjectName -> "layout_name"
+            
+            text_map = {
+                'Gez': info.get('kuerzel', ''),
+                'Dat': info.get('date', ''),
+                'project_nr': info.get('title', ''), # Assuming field 'Title' maps to ID 'project_nr'
+                'layout_name': info.get('project_name', ''),
+                'Title': info.get('title', ''), # Fallback if ID is Title
+                'Date': info.get('date', ''),   # Fallback
+                'ProjectNumber': info.get('title', '') # Fallback
+            }
+            
+            for item_id, text in text_map.items():
+                if not text: continue
+                item = layout.itemById(item_id)
+                if isinstance(item, QgsLayoutItemLabel):
+                    item.setText(text)
+            
+            # 2. Handle MainMap Slots (MainMap1, MainMap2, ...)
+            # User has Map items with IDs: MainMap1, MainMap2, ..., MainMap8
+            
+            # Track opacity changes to restore later
+            opacity_restore_list = []
+            
+            # overlay_ids is a list of 8 items (Layer ID or None) from dropdowns
+            for i, lid in enumerate(overlay_ids):
+                slot_id = f"MainMap{i+1}"
+                slot = layout.itemById(slot_id)
+                
+                if isinstance(slot, QgsLayoutItemMap):
+                    if lid:
+                        overlay_layer = project.mapLayer(lid)
+                        if overlay_layer:
+                            # Set extent and scale
+                            slot.setExtent(rectangle)
+                            slot.setScale(scale)
+                            slot.setFollowVisibilityPreset(False)
+                            
+                            # Store original opacity for restoration later
+                            original_opacity = overlay_layer.opacity()
+                            opacity_restore_list.append((overlay_layer, original_opacity))
+                            
+                            # Set the overlay layer's opacity
+                            overlay_layer.setOpacity(opacity)
+                            
+                            # Set both layers
+                            slot.setLayers([overlay_layer, base_layer])
+                            slot.setItemOpacity(1.0)
+                        else:
+                            slot.setLayers([])
+                    else:
+                        slot.setFollowVisibilityPreset(False)
+                        slot.setLayers([])
+                        slot.setBackgroundColor(QColor(255, 255, 255, 255))
+                    
+            # Clear remaining slots if template has more than 8?
+            # Not strictly necessary if we only support 8 dropdowns.
+            
+            # 3. Fix LayoutBSS SVG Path
+            # Ensure the SVG path is correct (absolute path to templates dir)
+            layout_bss_item = layout.itemById("LayoutBSS")
+            if isinstance(layout_bss_item, QgsLayoutItemPicture):
+                svg_path = os.path.join(os.path.dirname(__file__), 'templates', 'LayoutBSS.svg')
+                if os.path.exists(svg_path):
+                    layout_bss_item.setPicturePath(svg_path)
+                else:
+                    print(f"Warnung: LayoutBSS.svg nicht gefunden unter {svg_path}")
 
-        # Margins and Footer
-        margin = 10
-        footer_height = 30
-        content_width = 420 - (2 * margin)
-        content_height = 297 - (2 * margin) - footer_height
-
-        # Grid Calculation
-        num_layers = len(overlay_ids)
-        if num_layers <= 4:
-            rows, cols = 1, num_layers
-        elif num_layers <= 8:
-            rows, cols = 2, 4
         else:
-            rows, cols = 3, 4 # Max 12
-    
-        cell_width = content_width / cols
-        cell_height = content_height / rows
+            # Fallback to old programmatic mode if no template (should not happen with new UI check)
+             QtWidgets.QMessageBox.warning(None, "Fehler", "Keine Vorlage ausgewählt!")
+             return None
 
-        # Place Layers
-        for i, lid in enumerate(overlay_ids):
-            if i >= rows * cols: break
-    
-            overlay_layer = project.mapLayer(lid)
-            if not overlay_layer: continue
-    
-            row = i // cols
-            col = i % cols
-    
-            x = margin + (col * cell_width)
-            y = margin + (row * cell_height)
-    
-            title_h = 5
-            legend_h = 25
-            map_h = cell_height - title_h - legend_h
-    
-            # Title
-            label = QgsLayoutItemLabel(layout)
-            label.setText(overlay_layer.name())
-            label.setFont(QtGui.QFont("Arial", 10, QtGui.QFont.Bold))
-            label.adjustSizeToText()
-            label.attemptMove(QgsLayoutPoint(x, y, QgsUnitTypes.LayoutMillimeters))
-            layout.addLayoutItem(label)
-    
-            # *** KORREKTUR: Map (Base) ***
-            map_base = QgsLayoutItemMap(layout)
-            layout.addLayoutItem(map_base)  # ZUERST hinzufügen!
-            map_base.attemptMove(QgsLayoutPoint(x, y + title_h, QgsUnitTypes.LayoutMillimeters))
-            map_base.attemptResize(QgsLayoutSize(cell_width - 2, map_h, QgsUnitTypes.LayoutMillimeters))
-            map_base.setLayers([base_layer])
-            map_base.setExtent(rectangle)
-            map_base.setScale(scale)
-            map_base.setFrameEnabled(True)
-    
-            # *** KORREKTUR: Map (Overlay) ***
-            map_overlay = QgsLayoutItemMap(layout)
-            layout.addLayoutItem(map_overlay)  # ZUERST hinzufügen!
-            map_overlay.attemptMove(QgsLayoutPoint(x, y + title_h, QgsUnitTypes.LayoutMillimeters))
-            map_overlay.attemptResize(QgsLayoutSize(cell_width - 2, map_h, QgsUnitTypes.LayoutMillimeters))
-            map_overlay.setLayers([overlay_layer])
-            map_overlay.setExtent(rectangle)
-            map_overlay.setScale(scale)
-            map_overlay.setBackgroundColor(QColor(255, 255, 255, 0))
-            map_overlay.setItemOpacity(opacity)
-    
-            # Legend (for Overlay only)
-            legend = QgsLayoutItemLegend(layout)
-            legend.setLinkedMap(map_overlay)
-            legend.setAutoUpdateModel(False)
-            root = legend.model().rootGroup()
-            root.clear()
-            root.addLayer(overlay_layer)
-    
-            legend.setSymbolHeight(4)
-            legend.setSymbolWidth(4)
-            legend.setStyleFont(QgsLegendStyle.SymbolLabel, QtGui.QFont("Arial", 8))
-            legend.attemptMove(QgsLayoutPoint(x, y + title_h + map_h + 1, QgsUnitTypes.LayoutMillimeters))
-            legend.attemptResize(QgsLayoutSize(cell_width, legend_h, QgsUnitTypes.LayoutMillimeters))
-            layout.addLayoutItem(legend)
-
-    # --- Footer --- (ACHTUNG: Korrekte Einrückung = 4 Leerzeichen!)
-        footer_y = 297 - margin - footer_height
-
-    # Line separator
-        line = QgsLayoutItemPolyline(layout)
-        nodes = QPolygonF()
-        nodes.append(QPointF(margin, footer_y))
-        nodes.append(QPointF(420-margin, footer_y))
-        line.setNodes(nodes)
-        layout.addLayoutItem(line)
-
-    # Logo
-        logo_label = QgsLayoutItemLabel(layout)
-        logo_label.setText("BSS ARCHITEKTEN")
-        logo_label.setFont(QtGui.QFont("Arial", 16, QtGui.QFont.Bold))
-        logo_label.adjustSizeToText()
-        logo_label.attemptMove(QgsLayoutPoint(margin, footer_y + 5, QgsUnitTypes.LayoutMillimeters))
-        layout.addLayoutItem(logo_label)
-
-    # Project Info
-        info_text = f"{info['number']} / {info['title']}\nDatum: {info['date']}\nMassstab: 1:{int(scale)}"
-        info_label = QgsLayoutItemLabel(layout)
-        info_label.setText(info_text)
-        info_label.setFont(QtGui.QFont("Arial", 10))
-        info_label.adjustSizeToText()
-        info_label.attemptMove(QgsLayoutPoint(margin + 100, footer_y + 5, QgsUnitTypes.LayoutMillimeters))
-        layout.addLayoutItem(info_label)
-
-    # North Arrow
-        arrow = QgsLayoutItemPicture(layout)
-        arrow.setPicturePath(":/images/north_arrows/layout_default_north_arrow.svg")
-        arrow.attemptResize(QgsLayoutSize(15, 15, QgsUnitTypes.LayoutMillimeters))
-        arrow.attemptMove(QgsLayoutPoint(420 - margin - 20, footer_y + 5, QgsUnitTypes.LayoutMillimeters))
-        layout.addLayoutItem(arrow)
-
-    # Export or Open
+        # Export or Open
         if debug:
             # Layout Namen setzen
-            layout_name = f"Debug_Layout_{info['title']}"
+            layout_name = f"Debug_Layout_{info.get('title', 'Unknown')}"
             layout.setName(layout_name)
             
             # Zum Manager hinzufügen
@@ -789,7 +830,7 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             QTimer.singleShot(100, open_layout)
             return layout
         else:
-            safe_title = "".join([c for c in info['title'] if c.isalnum() or c in (' ', '-', '_')]).strip()
+            safe_title = "".join([c for c in info.get('title', 'export') if c.isalnum() or c in (' ', '-', '_')]).strip()
             filename = f"Layout_{safe_title}.{fmt.lower()}"
             path = os.path.join(out_dir, filename)
         
@@ -802,6 +843,10 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 settings = QgsLayoutExporter.ImageExportSettings()
                 settings.dpi = dpi
                 exporter.exportToImage(path, settings)
+            
+            # Restore layer opacities after export
+            for layer, original_opacity in opacity_restore_list:
+                layer.setOpacity(original_opacity)
             
             print(f"Layout exportiert: {path}")
             return None
