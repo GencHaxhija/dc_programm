@@ -1,0 +1,17 @@
+{
+  "Luzern": {
+    "wms_url": "https://geo.lu.ch/wms",
+    "description": "Kanton Luzern Geodaten",
+    "enabled": true
+  },
+  "Zürich": {
+    "wms_url": "https://maps.zh.ch/wms/FnsGFZHWMS",
+    "description": "Kanton Zürich Geodaten",
+    "enabled": true
+  },
+  "Schwyz": {
+    "wms_url": "https://map.geo.sz.ch/wms",
+    "description": "Kanton Schwyz Geodaten",
+    "enabled": true
+  }
+}

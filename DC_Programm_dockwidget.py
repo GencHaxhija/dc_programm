@@ -23,6 +23,7 @@
 """
 
 import os
+import json
 from qgis.PyQt import QtGui, QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QSize, QRectF, QPointF
 from qgis.PyQt.QtXml import QDomDocument
@@ -142,7 +143,7 @@ class LayerSelectDialog(QtWidgets.QDialog):
         h_tmpl.addWidget(self.btn_template)
         layout_form.addLayout(h_tmpl)
 
-        # Base Layer (Layout Mode) - RESTORED
+        # Base Layer (for Layout Export)
         layout_form.addWidget(QtWidgets.QLabel("<b>Basis-Layer (Hintergrund):</b>"))
         self.combo_base_layout = QtWidgets.QComboBox()
         for layer in self.all_layers:
@@ -190,10 +191,14 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.edit_project_name = QtWidgets.QLineEdit()
         self.edit_project_name.setPlaceholderText("Projektname")
         
-        form_info.addRow("Kürzel:", self.edit_kuerzel)
-        form_info.addRow("Datum:", self.edit_date)
-        form_info.addRow("Titel:", self.edit_title)
-        form_info.addRow("Projekt:", self.edit_project_name)
+        self.edit_document_name = QtWidgets.QLineEdit()
+        self.edit_document_name.setPlaceholderText("Name der exportierten Datei (ohne Endung)")
+        
+        form_info.addRow("Gez:", self.edit_kuerzel)
+        form_info.addRow("Dat:", self.edit_date)
+        form_info.addRow("Title:", self.edit_title)
+        form_info.addRow("Projekt Name:", self.edit_project_name)
+        form_info.addRow("Dokument Name:", self.edit_document_name)
         
         layout_form.addLayout(form_info)
 
@@ -208,7 +213,7 @@ class LayerSelectDialog(QtWidgets.QDialog):
         layout_form.addLayout(h_opacity_layout)
         
         # Debug Mode
-        self.check_debug = QtWidgets.QCheckBox("Debug-Modus (Layout öffnen statt exportieren)")
+        self.check_debug = QtWidgets.QCheckBox("Layout öffnen ohne Datei zu speichern")
         self.check_debug.setChecked(False)
         layout_form.addWidget(self.check_debug)
         
@@ -226,12 +231,8 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.combo_dpi.addItems(["150 (Screen)", "300 (Print)", "600 (High Quality)"])
         self.combo_dpi.setCurrentIndex(1) # Default 300
         
-        self.check_decorations = QtWidgets.QCheckBox("Legende & Nordpfeil hinzufügen")
-        self.check_decorations.setChecked(True)
-        
         opts_layout.addRow("Format:", self.combo_format)
         opts_layout.addRow("Qualität (DPI):", self.combo_dpi)
-        opts_layout.addRow(self.check_decorations)
         self.layout.addWidget(self.gb_opts)
         
         # --- Progress Bar ---
@@ -288,6 +289,7 @@ class LayerSelectDialog(QtWidgets.QDialog):
             "date": self.edit_date.text(),
             "title": self.edit_title.text(),
             "project_name": self.edit_project_name.text(),
+            "document_name": self.edit_document_name.text(),
             "base_id": self.combo_base_layout.currentData(),
             "overlay_ids": selected_overlays, # List of 8 IDs (or None)
             "opacity": self.spin_opacity_layout.value() / 100.0,
@@ -316,9 +318,6 @@ class LayerSelectDialog(QtWidgets.QDialog):
     def get_dpi(self):
         txt = self.combo_dpi.currentText() # "300 (Print)"
         return int(txt.split()[0])
-        
-    def get_decorations(self):
-        return self.check_decorations.isChecked()
         
     def show_progress(self, show=True):
         self.progress_bar.setVisible(show)
@@ -401,6 +400,15 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         super(SnipperDockWidget, self).__init__(parent)
         self.setupUi(self)
         
+        # Hide unused UI elements from template
+        if hasattr(self, 'layerComboBox'):
+            self.layerComboBox.hide()
+            self.layerComboBox.setVisible(False)
+            # Try to remove from parent layout if exists
+            parent = self.layerComboBox.parent()
+            if parent and parent.layout():
+                parent.layout().removeWidget(self.layerComboBox)
+        
         # Add Scale Selector
         self.scale_combo = QtWidgets.QComboBox()
         self.scale_combo.addItems(["1:200", "1:500", "1:1000", "1:1500", "1:2000", "1:2500", "1:5000"])
@@ -415,6 +423,23 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             h_layout.addWidget(self.scale_combo)
             parent_layout.insertLayout(idx, h_layout)
             
+            # Add Canton Selection (under scale)
+            canton_h = QtWidgets.QHBoxLayout()
+            canton_h.addWidget(QtWidgets.QLabel("Kanton:"))
+            self.combo_canton = QtWidgets.QComboBox()
+            canton_h.addWidget(self.combo_canton)
+            
+            # Button to refresh canton list
+            self.btn_refresh_canton = QtWidgets.QPushButton("🔄")
+            self.btn_refresh_canton.setFixedWidth(30)
+            self.btn_refresh_canton.setToolTip("Kantone neu laden")
+            self.btn_refresh_canton.clicked.connect(self.refresh_canton_list)
+            canton_h.addWidget(self.btn_refresh_canton)
+            parent_layout.insertLayout(idx + 1, canton_h)
+            
+            # Populate canton list on startup
+            self.refresh_canton_list()
+        
         self.exportButton.clicked.connect(self.on_export_clicked)
         self.areaSelectButton.clicked.connect(self.on_area_select_clicked)
         
@@ -426,6 +451,24 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self._clear_selection_visual()
         self.closingPlugin.emit()
         event.accept()
+    
+    def refresh_canton_list(self):
+        """Detect existing Kanton_* groups in the project"""
+        self.combo_canton.clear()
+        
+        root = QgsProject.instance().layerTreeRoot()
+        cantons = []
+        
+        for child in root.children():
+            if child.name().startswith("Kanton_"):
+                canton_name = child.name().replace("Kanton_", "")
+                cantons.append(canton_name)
+        
+        if cantons:
+            for canton in sorted(cantons):
+                self.combo_canton.addItem(canton, canton)
+        else:
+            self.combo_canton.addItem("(Keine Kanton-Gruppen gefunden)", None)
 
     def get_selected_scale(self):
         txt = self.scale_combo.currentText()
@@ -442,6 +485,37 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             self._clear_selection_visual()
             self.current_geometry = None
             QtWidgets.QMessageBox.information(self, "Info", "Maßstab geändert. Bitte Bereich neu auswählen.")
+    
+    def refresh_canton_list(self):
+        """Detect existing Kanton_* groups in the project and populate dropdown"""
+        project = QgsProject.instance()
+        root = project.layerTreeRoot()
+        
+        # Find all groups that start with "Kanton_"
+        canton_groups = []
+        for group in root.findGroups():
+            if group.name().startswith("Kanton_"):
+                canton_name = group.name().replace("Kanton_", "")
+                canton_groups.append((canton_name, group.name()))
+        
+        # Update combo box
+        current_selection = self.combo_canton.currentData()
+        self.combo_canton.clear()
+        
+        if canton_groups:
+            for canton_name, group_name in sorted(canton_groups):
+                self.combo_canton.addItem(canton_name, group_name)
+            
+            # Restore previous selection if still available
+            if current_selection:
+                index = self.combo_canton.findData(current_selection)
+                if index >= 0:
+                    self.combo_canton.setCurrentIndex(index)
+            
+            print(f"DEBUG: Found {len(canton_groups)} canton groups: {[c[0] for c in canton_groups]}")
+        else:
+            self.combo_canton.addItem("Keine Kantone gefunden", None)
+            print("DEBUG: No Kanton_* groups found in project")
 
     def on_area_select_clicked(self):
         self._clear_selection_visual()
@@ -492,7 +566,6 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         mode = dialog.get_mode()
         fmt = dialog.get_format()
         dpi = dialog.get_dpi()
-        decorations = dialog.get_decorations()
         scale = self.get_selected_scale()
 
         # 2. Directory Selection
@@ -736,13 +809,15 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             # ProjectName -> "layout_name"
             
             text_map = {
-                'Gez': info.get('kuerzel', ''),
+                'Kürzel': info.get('kuerzel', ''),  # Primary ID
+                'Gez': info.get('kuerzel', ''),      # Fallback
                 'Dat': info.get('date', ''),
-                'project_nr': info.get('title', ''), # Assuming field 'Title' maps to ID 'project_nr'
+                'Date': info.get('date', ''),        # Fallback
+                'project_nr': info.get('title', ''),
+                'Title': info.get('title', ''),      # Fallback
+                'ProjectNumber': info.get('title', ''), # Fallback
                 'layout_name': info.get('project_name', ''),
-                'Title': info.get('title', ''), # Fallback if ID is Title
-                'Date': info.get('date', ''),   # Fallback
-                'ProjectNumber': info.get('title', '') # Fallback
+                'ProjectName': info.get('project_name', '')  # Primary ID
             }
             
             for item_id, text in text_map.items():
@@ -784,8 +859,13 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                         else:
                             slot.setLayers([])
                     else:
+                        # Empty slot - make completely invisible
                         slot.setFollowVisibilityPreset(False)
                         slot.setLayers([])
+                        # Make the entire item invisible
+                        slot.setItemOpacity(0.0)
+                        # Also set white background just in case
+                        slot.setBackgroundEnabled(True)
                         slot.setBackgroundColor(QColor(255, 255, 255, 255))
                     
             # Clear remaining slots if template has more than 8?
@@ -830,23 +910,48 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             QTimer.singleShot(100, open_layout)
             return layout
         else:
-            safe_title = "".join([c for c in info.get('title', 'export') if c.isalnum() or c in (' ', '-', '_')]).strip()
-            filename = f"Layout_{safe_title}.{fmt.lower()}"
+            # Use document_name if provided, otherwise fall back to title
+            doc_name = info.get('document_name', '').strip()
+            if not doc_name:
+                doc_name = info.get('title', 'export').strip()
+            if not doc_name:
+                doc_name = 'export'
+            
+            safe_name = "".join([c for c in doc_name if c.isalnum() or c in (' ', '-', '_')]).strip()
+            filename = f"{safe_name}.{fmt.lower()}"
             path = os.path.join(out_dir, filename)
         
             exporter = QgsLayoutExporter(layout)
             if fmt == "PDF":
                 settings = QgsLayoutExporter.PdfExportSettings()
                 settings.dpi = dpi
-                exporter.exportToPdf(path, settings)
+                result = exporter.exportToPdf(path, settings)
             else:
+                # For image formats (PNG, JPG, etc.)
                 settings = QgsLayoutExporter.ImageExportSettings()
                 settings.dpi = dpi
-                exporter.exportToImage(path, settings)
+                # Make sure path has correct extension
+                if not path.lower().endswith(f'.{fmt.lower()}'):
+                    base_path = os.path.splitext(path)[0]
+                    path = f"{base_path}.{fmt.lower()}"
+                result = exporter.exportToImage(path, settings)
             
             # Restore layer opacities after export
             for layer, original_opacity in opacity_restore_list:
                 layer.setOpacity(original_opacity)
             
-            print(f"Layout exportiert: {path}")
+            # Check export result
+            if result == QgsLayoutExporter.Success:
+                print(f"Layout exportiert: {path}")
+            else:
+                error_messages = {
+                    QgsLayoutExporter.FileError: "Datei konnte nicht geschrieben werden",
+                    QgsLayoutExporter.PrintError: "Druckfehler",
+                    QgsLayoutExporter.MemoryError: "Nicht genug Speicher",
+                    QgsLayoutExporter.IteratorError: "Iterator-Fehler",
+                    QgsLayoutExporter.Canceled: "Export abgebrochen"
+                }
+                error_msg = error_messages.get(result, f"Unbekannter Fehler ({result})")
+                print(f"FEHLER beim Export: {error_msg}")
+            
             return None
