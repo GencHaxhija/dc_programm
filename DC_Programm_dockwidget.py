@@ -55,10 +55,12 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.rb_batch = QtWidgets.QRadioButton("Einzel-Export (Batch)")
         self.rb_overlay = QtWidgets.QRadioButton("Overlay-Export (Basis + X)")
         self.rb_layout = QtWidgets.QRadioButton("Layout-Bogen (Übersicht A3)")
+        self.rb_dxf = QtWidgets.QRadioButton("DXF Export (CAD)")
         self.rb_batch.setChecked(True)
         self.mode_layout.addWidget(self.rb_batch)
         self.mode_layout.addWidget(self.rb_overlay)
         self.mode_layout.addWidget(self.rb_layout)
+        self.mode_layout.addWidget(self.rb_dxf)
         self.layout.addWidget(self.gb_mode)
         
         self.all_layers = sorted(QgsProject.instance().mapLayers().values(), key=lambda l: l.name())
@@ -220,6 +222,43 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.layout.addWidget(self.widget_layout)
         self.widget_layout.hide()
 
+        # --- DXF Export UI ---
+        self.widget_dxf = QtWidgets.QWidget()
+        dxf_layout = QtWidgets.QVBoxLayout(self.widget_dxf)
+        
+        dxf_layout.addWidget(QtWidgets.QLabel("<b>Vektor-Layer für DXF-Export (max. 5):</b>"))
+        
+        # Create scrollable list with checkboxes for all vector layers
+        from qgis.core import QgsVectorLayer
+        vector_layers = [layer for layer in self.all_layers if isinstance(layer, QgsVectorLayer)]
+        
+        # QListWidget for scrollable layer selection
+        self.dxf_list = QtWidgets.QListWidget()
+        self.dxf_list.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
+        self.dxf_list.setMaximumHeight(200)  # Limit height for scrollability
+        
+        if vector_layers:
+            for layer in vector_layers:
+                item = QtWidgets.QListWidgetItem(layer.name())
+                item.setData(Qt.UserRole, layer.id())  # Store layer ID
+                self.dxf_list.addItem(item)
+        else:
+            item = QtWidgets.QListWidgetItem("Keine Vektor-Layer verfügbar")
+            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+            self.dxf_list.addItem(item)
+        
+        dxf_layout.addWidget(self.dxf_list)
+        
+        # Selection counter - updates dynamically
+        self.dxf_counter_label = QtWidgets.QLabel(f"<b>Ausgewählt: 0 / 5</b> <i>({len(vector_layers)} verfügbar)</i>")
+        dxf_layout.addWidget(self.dxf_counter_label)
+        
+        # Connect signal to update counter
+        self.dxf_list.itemSelectionChanged.connect(self.update_dxf_counter)
+        
+        self.layout.addWidget(self.widget_dxf)
+        self.widget_dxf.hide()
+
         # --- Common Options ---
         self.gb_opts = QtWidgets.QGroupBox("Optionen")
         opts_layout = QtWidgets.QFormLayout(self.gb_opts)
@@ -252,31 +291,67 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.rb_batch.toggled.connect(self.toggle_mode)
         self.rb_overlay.toggled.connect(self.toggle_mode)
         self.rb_layout.toggled.connect(self.toggle_mode)
+        self.rb_dxf.toggled.connect(self.toggle_mode)
 
     def toggle_mode(self):
         if self.rb_batch.isChecked():
             self.widget_batch.show()
             self.widget_overlay.hide()
             self.widget_layout.hide()
+            self.widget_dxf.hide()
             self.gb_opts.show()
         elif self.rb_overlay.isChecked():
             self.widget_batch.hide()
             self.widget_overlay.show()
             self.widget_layout.hide()
+            self.widget_dxf.hide()
             self.gb_opts.show()
         elif self.rb_layout.isChecked():
             self.widget_batch.hide()
             self.widget_overlay.hide()
             self.widget_layout.show()
+            self.widget_dxf.hide()
             self.gb_opts.show()
+        elif self.rb_dxf.isChecked():
+            self.widget_batch.hide()
+            self.widget_overlay.hide()
+            self.widget_layout.hide()
+            self.widget_dxf.show()
+            self.gb_opts.hide()  # No format/DPI options for DXF
 
     def get_mode(self):
         if self.rb_overlay.isChecked(): return "overlay"
         if self.rb_layout.isChecked(): return "layout"
+        if self.rb_dxf.isChecked(): return "dxf"
         return "batch"
 
     def get_batch_layers(self):
         return [cb.layer_id for cb in self.batch_checks if cb.isChecked()]
+    
+    def get_dxf_layers(self):
+        """Get selected layer IDs for DXF export (max 5)"""
+        selected_items = self.dxf_list.selectedItems()
+        return [item.data(Qt.UserRole) for item in selected_items if item.data(Qt.UserRole) is not None]
+    
+    def update_dxf_counter(self):
+        """Update DXF selection counter label"""
+        count = len(self.dxf_list.selectedItems())
+        total_available = self.dxf_list.count()
+        
+        # Color coding: red if >5, green if 1-5, gray if 0
+        if count > 5:
+            color = "red"
+            status = "⚠️"
+        elif count >= 1:
+            color = "green"
+            status = "✓"
+        else:
+            color = "gray"
+            status = ""
+        
+        self.dxf_counter_label.setText(
+            f"<b style='color:{color};'>{status} Ausgewählt: {count} / 5</b> <i>({total_available} verfügbar)</i>"
+        )
         
     def get_layout_config(self):
         # Collect selected IDs from the 8 combos
@@ -603,7 +678,6 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                         out_dir=out_dir, 
                         fmt=fmt, 
                         dpi=dpi, 
-                        decorations=decorations,
                         filename_prefix=layer.name()
                     )
                     count += 1
@@ -639,7 +713,6 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                         out_dir=out_dir,
                         fmt=fmt,
                         dpi=dpi,
-                        decorations=decorations,
                         filename_prefix=f"Overlay_{base_layer.name()}_{overlay_layer.name()}"
                     )
                     count += 1
@@ -679,11 +752,47 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             if cfg["debug"]:
                 QtWidgets.QMessageBox.information(self, "Debug", "Layout wurde geöffnet. Bitte prüfe die Positionierung und schicke mir Screenshots!")
             else:
-                QtWidgets.QMessageBox.information(self, "Erfolg", "Layout-Bogen wurde erstellt.")
+                if result:
+                    QtWidgets.QMessageBox.information(self, "Erfolg", f"Layout erfolgreich gespeichert!")
+        
+        elif mode == "dxf":
+            # DXF Export Mode
+            dxf_layer_ids = dialog.get_dxf_layers()
+            
+            if not dxf_layer_ids:
+                QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Layer für DXF-Export auswählen!")
+                return
+            
+            if len(dxf_layer_ids) > 5:
+                QtWidgets.QMessageBox.warning(self, "Fehler", "Maximal 5 Layer können gleichzeitig exportiert werden.")
+                return
+            
+            progress.setMaximum(0)  # Indeterminate progress
+            progress.setLabelText(f"Exportiere {len(dxf_layer_ids)} Layer als DXF...")
+            
+            # Filename: Wenn nur 1 Layer -> Layer-Name, sonst "Multi"
+            if len(dxf_layer_ids) == 1:
+                layer = QgsProject.instance().mapLayer(dxf_layer_ids[0])
+                filename = layer.name() if layer else "export"
+            else:
+                filename = f"MultiLayer_{len(dxf_layer_ids)}_Layers"
+            
+            success = self.export_dxf(
+                layer_ids=dxf_layer_ids,
+                rectangle=self.current_geometry,
+                out_dir=out_dir,
+                filename=filename
+            )
+            
+            progress.setValue(100)
+            
+            if success:
+                QtWidgets.QMessageBox.information(self, "Erfolg", 
+                    f"DXF-Export erfolgreich!\n{len(dxf_layer_ids)} Layer exportiert.")
         
         progress.close()
 
-    def export_layout(self, layers, opacities, rectangle, scale, out_dir, fmt, dpi, decorations, filename_prefix):
+    def export_layout(self, layers, opacities, rectangle, scale, out_dir, fmt, dpi, filename_prefix):
         # Create a print layout
         project = QgsProject.instance()
         layout = QgsPrintLayout(project)
@@ -955,3 +1064,131 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 print(f"FEHLER beim Export: {error_msg}")
             
             return None
+    
+    def export_dxf(self, layer_ids, rectangle, out_dir, filename):
+        """
+        Exportiert 1-5 Vektor-Layer als DXF.
+        Wenn 1 Layer: Einzelexport mit QgsVectorFileWriter
+        Wenn 2-5 Layer: Kombinierter Export mit QgsDxfExport
+        """
+        from qgis.core import (QgsVectorFileWriter, QgsDxfExport, 
+                               QgsCoordinateReferenceSystem, QgsMapSettings, 
+                               QgsRectangle, QgsProject, QgsMapLayer)
+        
+        # Validierung: 1-5 Layer
+        if not layer_ids or len(layer_ids) < 1:
+            QtWidgets.QMessageBox.warning(None, "Fehler", 
+                "Bitte mindestens 1 Layer für DXF-Export auswählen.")
+            return False
+        
+        if len(layer_ids) > 5:
+            QtWidgets.QMessageBox.warning(None, "Fehler", 
+                "Maximal 5 Layer können gleichzeitig exportiert werden.")
+            return False
+        
+        # Layer-Objekte laden
+        layers = []
+        for layer_id in layer_ids:
+            layer = QgsProject.instance().mapLayer(layer_id)
+            if layer and layer.type() == QgsMapLayer.VectorLayer:
+                layers.append(layer)
+            else:
+                print(f"Warnung: Layer {layer_id} nicht gefunden oder kein Vektor-Layer")
+        
+        if not layers:
+            QtWidgets.QMessageBox.warning(None, "Fehler", 
+                "Keine gültigen Vektor-Layer zum Exportieren gefunden.")
+            return False
+        
+        # Dateiname vorbereiten
+        dxf_path = os.path.join(out_dir, f"{filename}.dxf")
+        
+        try:
+            if len(layers) == 1:
+                # EINZELNER LAYER: QgsVectorFileWriter verwenden
+                layer = layers[0]
+                
+                # Save options
+                save_options = QgsVectorFileWriter.SaveVectorOptions()
+                save_options.driverName = "DXF"
+                save_options.fileEncoding = "UTF-8"
+                save_options.skipAttributeCreation = True  # DXF unterstützt keine benutzerdefinierten Felder
+                
+                # Filter nach Rectangle wenn vorhanden
+                if rectangle:
+                    save_options.filterExtent = rectangle
+                
+                # Export
+                error = QgsVectorFileWriter.writeAsVectorFormatV2(
+                    layer,
+                    dxf_path,
+                    QgsProject.instance().transformContext(),
+                    save_options
+                )
+                
+                if error[0] == QgsVectorFileWriter.NoError:
+                    print(f"✓ DXF erfolgreich exportiert: {dxf_path}")
+                    return True
+                else:
+                    QtWidgets.QMessageBox.warning(None, "Fehler", 
+                        f"DXF-Export fehlgeschlagen:\n{error[1]}")
+                    return False
+                    
+            else:
+                # MEHRERE LAYER (2-5): QgsDxfExport verwenden
+                dxf_export = QgsDxfExport()
+                dxf_export.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2056"))
+                
+                # Layer hinzufügen - QGIS 3.x verwendet addLayers, nicht setLayers
+                for layer in layers:
+                    dxf_export.addLayers([QgsDxfExport.DxfLayer(layer)])
+                
+                # Extent setzen
+                if rectangle:
+                    dxf_export.setExtent(rectangle)
+                else:
+                    # Gesamten Extent aller Layer verwenden
+                    combined_extent = QgsRectangle()
+                    combined_extent.setMinimal()
+                    for layer in layers:
+                        combined_extent.combineExtentWith(layer.extent())
+                    dxf_export.setExtent(combined_extent)
+                
+                # MapSettings für Symbologie (optional)
+                map_settings = QgsMapSettings()
+                map_settings.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2056"))
+                map_settings.setExtent(dxf_export.extent())
+                dxf_export.setMapSettings(map_settings)
+                
+                # Export durchführen - QFile verwenden statt String-Pfad
+                from qgis.PyQt.QtCore import QFile, QIODevice
+                
+                output_file = QFile(dxf_path)
+                if not output_file.open(QIODevice.WriteOnly):
+                    QtWidgets.QMessageBox.warning(None, "Fehler", 
+                        f"Datei kann nicht zum Schreiben geöffnet werden:\n{dxf_path}")
+                    return False
+                
+                result = dxf_export.writeToFile(output_file, "UTF-8")
+                output_file.close()
+                
+                if result == QgsDxfExport.ExportResult.Success:
+                    print(f"✓ Multi-Layer DXF erfolgreich exportiert: {dxf_path}")
+                    return True
+                else:
+                    error_messages = {
+                        QgsDxfExport.ExportResult.DeviceNotWritableError: "Datei kann nicht geschrieben werden",
+                        QgsDxfExport.ExportResult.EmptyExtent: "Leerer Exportbereich"
+                    }
+                    error_msg = error_messages.get(result, f"Unbekannter Fehler ({result})")
+                    QtWidgets.QMessageBox.warning(None, "Fehler", 
+                        f"Multi-Layer DXF-Export fehlgeschlagen:\n{error_msg}")
+                    return False
+                    
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(None, "Fehler", 
+                f"Fehler beim DXF-Export:\n{str(e)}")
+            print(f"Exception in export_dxf: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
