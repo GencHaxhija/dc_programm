@@ -470,6 +470,11 @@ class FixedFrameTool(QgsMapTool):
 
 class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     closingPlugin = pyqtSignal()
+    
+    # Konfiguration für Titel in Layout-Exporten
+    TITLE_FONT_FAMILY = "Arial Narrow"  # Schriftart für Titel über Karten
+    TITLE_FONT_SIZE = 12         # Schriftgröße für Titel (in Punkten)
+
 
     def __init__(self, parent=None):
         super(SnipperDockWidget, self).__init__(parent)
@@ -965,6 +970,63 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                             # Set both layers
                             slot.setLayers([overlay_layer, base_layer])
                             slot.setItemOpacity(1.0)
+                            
+                            # --- ADD TITLE ABOVE MAP ---
+                            # Get map position and size
+                            map_pos = slot.positionWithUnits()
+                            map_size = slot.sizeWithUnits()
+                            
+                            # Create title label with overlay layer name
+                            title_label = QgsLayoutItemLabel(layout)
+                            title_label.setText(overlay_layer.name())
+                            title_label.setFont(QtGui.QFont(self.TITLE_FONT_FAMILY, self.TITLE_FONT_SIZE, QtGui.QFont.Bold))
+                            title_label.adjustSizeToText()
+                            
+                            # Position: above the map (8mm margin)
+                            title_label.attemptMove(QgsLayoutPoint(
+                                map_pos.x(), 
+                                map_pos.y() - 8,
+                                QgsUnitTypes.LayoutMillimeters
+                            ))
+                            layout.addLayoutItem(title_label)
+                            
+                            # --- ADD LEGEND BELOW MAP ---
+                            legend = QgsLayoutItemLegend(layout)
+                            legend.setLinkedMap(slot)
+                            
+                            # Configure legend to show only overlay layer symbology (without layer name)
+                            legend.setAutoUpdateModel(False)
+                            legend_model = legend.model()
+                            legend_model.rootGroup().clear()
+                            
+                            # Add layer to legend
+                            layer_tree_layer = legend_model.rootGroup().addLayer(overlay_layer)
+                            
+                            # Hide the layer name by setting it to empty string
+                            # This avoids duplication with the title above the map
+                            layer_tree_layer.setName("")
+                            
+                            # Compact legend style - no titles, minimal margins
+                            legend.setTitle("")  # No legend title
+                            legend.rstyle(QgsLegendStyle.Title).setMargin(QgsLegendStyle.Bottom, 0)
+                            legend.rstyle(QgsLegendStyle.Group).setMargin(QgsLegendStyle.Top, 0)
+                            legend.rstyle(QgsLegendStyle.Subgroup).setMargin(QgsLegendStyle.Top, 0)
+                            
+                            # Further compactness: minimize symbol spacing
+                            legend.rstyle(QgsLegendStyle.Symbol).setMargin(QgsLegendStyle.Top, 1)
+                            legend.rstyle(QgsLegendStyle.SymbolLabel).setMargin(QgsLegendStyle.Top, 1)
+                            
+                            # Position: below the map (2mm margin)
+                            legend.attemptMove(QgsLayoutPoint(
+                                map_pos.x(),
+                                map_pos.y() + map_size.height() + 2,
+                                QgsUnitTypes.LayoutMillimeters
+                            ))
+                            
+                            # Adjust legend size to fit content
+                            legend.adjustBoxSize()
+                            
+                            layout.addLayoutItem(legend)
                         else:
                             slot.setLayers([])
                     else:
