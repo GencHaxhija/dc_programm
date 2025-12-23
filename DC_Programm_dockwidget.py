@@ -63,7 +63,59 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.mode_layout.addWidget(self.rb_dxf)
         self.layout.addWidget(self.gb_mode)
         
-        self.all_layers = sorted(QgsProject.instance().mapLayers().values(), key=lambda l: l.name())
+        # --- Page Size Selection (only for Batch & Overlay) ---
+        self.gb_page_size = QtWidgets.QGroupBox("Seitengröße")
+        page_size_layout = QtWidgets.QVBoxLayout(self.gb_page_size)
+        
+        # Dropdown for predefined formats
+        h_format = QtWidgets.QHBoxLayout()
+        h_format.addWidget(QtWidgets.QLabel("Format:"))
+        self.combo_page_format = QtWidgets.QComboBox()
+        self.combo_page_format.addItem("Standard (150 x 120 mm)", (150, 120))
+        self.combo_page_format.addItem("A4 Querformat (297 x 210 mm)", (297, 210))
+        self.combo_page_format.addItem("A4 Hochformat (210 x 297 mm)", (210, 297))
+        self.combo_page_format.addItem("A3 Querformat (420 x 297 mm)", (420, 297))
+        self.combo_page_format.addItem("A3 Hochformat (297 x 420 mm)", (297, 420))
+        h_format.addWidget(self.combo_page_format)
+        page_size_layout.addLayout(h_format)
+        
+        # Custom size checkbox + input fields
+        self.check_custom_size = QtWidgets.QCheckBox("Benutzerdefiniert")
+        self.check_custom_size.stateChanged.connect(self.toggle_custom_size)
+        page_size_layout.addWidget(self.check_custom_size)
+        
+        h_custom = QtWidgets.QHBoxLayout()
+        h_custom.addWidget(QtWidgets.QLabel("Breite:"))
+        self.spin_width = QtWidgets.QSpinBox()
+        self.spin_width.setRange(50, 1000)
+        self.spin_width.setValue(150)
+        self.spin_width.setSuffix(" mm")
+        self.spin_width.setEnabled(False)
+        h_custom.addWidget(self.spin_width)
+        
+        h_custom.addWidget(QtWidgets.QLabel("Höhe:"))
+        self.spin_height = QtWidgets.QSpinBox()
+        self.spin_height.setRange(50, 1000)
+        self.spin_height.setValue(120)
+        self.spin_height.setSuffix(" mm")
+        self.spin_height.setEnabled(False)
+        h_custom.addWidget(self.spin_height)
+        page_size_layout.addLayout(h_custom)
+        
+        self.layout.addWidget(self.gb_page_size)
+        
+        # Connect mode changes to show/hide page size
+        self.rb_batch.toggled.connect(self.update_page_size_visibility)
+        self.rb_overlay.toggled.connect(self.update_page_size_visibility)
+        self.rb_layout.toggled.connect(self.update_page_size_visibility)
+        self.rb_dxf.toggled.connect(self.update_page_size_visibility)
+        
+        # Initially hide if not batch/overlay
+        self.update_page_size_visibility()
+        
+        # Get all layers and filter out those without names
+        all_project_layers = QgsProject.instance().mapLayers().values()
+        self.all_layers = sorted([l for l in all_project_layers if l.name().strip()], key=lambda l: l.name())
         
         # --- Batch Selection UI ---
         self.widget_batch = QtWidgets.QWidget()
@@ -85,6 +137,17 @@ class LayerSelectDialog(QtWidgets.QDialog):
             
         scroll_batch.setWidget(scroll_content_batch)
         batch_layout.addWidget(scroll_batch)
+        
+        # Mode-specific buttons (bottom)
+        self.btn_area_batch = QtWidgets.QPushButton("📍  Bereich markieren")
+        self.btn_area_batch.clicked.connect(lambda: self.parent().on_area_select_mode("batch"))
+        batch_layout.addWidget(self.btn_area_batch)
+        
+        self.btn_export_batch = QtWidgets.QPushButton("📤 Exportieren")
+        self.btn_export_batch.clicked.connect(lambda: self.parent().on_export_mode("batch"))
+        self.btn_export_batch.setEnabled(False)
+        batch_layout.addWidget(self.btn_export_batch)
+        
         self.layout.addWidget(self.widget_batch)
         
         # --- Overlay Selection UI ---
@@ -125,6 +188,16 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.spin_opacity.setSuffix(" %")
         h_opacity.addWidget(self.spin_opacity)
         overlay_layout.addLayout(h_opacity)
+        
+        # Mode-specific buttons (bottom)
+        self.btn_area_overlay = QtWidgets.QPushButton("📍 Bereich markieren")
+        self.btn_area_overlay.clicked.connect(lambda: self.parent().on_area_select_mode("overlay"))
+        overlay_layout.addWidget(self.btn_area_overlay)
+        
+        self.btn_export_overlay = QtWidgets.QPushButton("📤 Exportieren")
+        self.btn_export_overlay.clicked.connect(lambda: self.parent().on_export_mode("overlay"))
+        self.btn_export_overlay.setEnabled(False)
+        overlay_layout.addWidget(self.btn_export_overlay)
         
         self.layout.addWidget(self.widget_overlay)
         self.widget_overlay.hide()
@@ -219,6 +292,16 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.check_debug.setChecked(False)
         layout_form.addWidget(self.check_debug)
         
+        # Mode-specific buttons (bottom)
+        self.btn_area_layout = QtWidgets.QPushButton("📍 Bereich markieren")
+        self.btn_area_layout.clicked.connect(lambda: self.parent().on_area_select_mode("layout"))
+        layout_form.addWidget(self.btn_area_layout)
+        
+        self.btn_export_layout = QtWidgets.QPushButton("📤 Exportieren")
+        self.btn_export_layout.clicked.connect(lambda: self.parent().on_export_mode("layout"))
+        self.btn_export_layout.setEnabled(False)
+        layout_form.addWidget(self.btn_export_layout)
+        
         self.layout.addWidget(self.widget_layout)
         self.widget_layout.hide()
 
@@ -256,6 +339,16 @@ class LayerSelectDialog(QtWidgets.QDialog):
         # Connect signal to update counter
         self.dxf_list.itemSelectionChanged.connect(self.update_dxf_counter)
         
+        # Mode-specific buttons (bottom)
+        self.btn_area_dxf = QtWidgets.QPushButton("📍 Bereich markieren")
+        self.btn_area_dxf.clicked.connect(lambda: self.parent().on_area_select_mode("dxf"))
+        dxf_layout.addWidget(self.btn_area_dxf)
+        
+        self.btn_export_dxf = QtWidgets.QPushButton("📤 Exportieren")
+        self.btn_export_dxf.clicked.connect(lambda: self.parent().on_export_mode("dxf"))
+        self.btn_export_dxf.setEnabled(False)
+        dxf_layout.addWidget(self.btn_export_dxf)
+        
         self.layout.addWidget(self.widget_dxf)
         self.widget_dxf.hide()
 
@@ -281,11 +374,8 @@ class LayerSelectDialog(QtWidgets.QDialog):
         self.progress_bar.hide()
         self.layout.addWidget(self.progress_bar)
 
-        # --- Buttons ---
-        self.btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        self.btn_box.accepted.connect(self.accept)
-        self.btn_box.rejected.connect(self.reject)
-        self.layout.addWidget(self.btn_box)
+        # --- Buttons (removed - each mode has its own export button) ---
+        # No OK/Cancel buttons needed anymore
         
         # Connect signals
         self.rb_batch.toggled.connect(self.toggle_mode)
@@ -393,6 +483,25 @@ class LayerSelectDialog(QtWidgets.QDialog):
     def get_dpi(self):
         txt = self.combo_dpi.currentText() # "300 (Print)"
         return int(txt.split()[0])
+    
+    def toggle_custom_size(self, state):
+        """Enable/disable custom size inputs"""
+        is_custom = (state == Qt.Checked)
+        self.combo_page_format.setEnabled(not is_custom)
+        self.spin_width.setEnabled(is_custom)
+        self.spin_height.setEnabled(is_custom)
+    
+    def update_page_size_visibility(self):
+        """Show page size selection only for batch and overlay modes"""
+        is_batch_or_overlay = self.rb_batch.isChecked() or self.rb_overlay.isChecked()
+        self.gb_page_size.setVisible(is_batch_or_overlay)
+    
+    def get_page_size(self):
+        """Return selected page size as (width, height) tuple in mm"""
+        if self.check_custom_size.isChecked():
+            return (self.spin_width.value(), self.spin_height.value())
+        else:
+            return self.combo_page_format.currentData()
         
     def show_progress(self, show=True):
         self.progress_bar.setVisible(show)
@@ -405,67 +514,82 @@ class LayerSelectDialog(QtWidgets.QDialog):
         QtWidgets.QApplication.processEvents()
 
 class FixedFrameTool(QgsMapTool):
-    def __init__(self, canvas, target_scale, callback):
+    def __init__(self, canvas, target_scale, callback, width_mm=150, height_mm=120):
         super().__init__(canvas)
         self.canvas = canvas
         self.target_scale = target_scale
         self.callback = callback
-        self.rb = None
-        self.setCursor(QCursor(Qt.BlankCursor))
-        self.half_width_map_units = 0
-        self.half_height_map_units = 0
-        self.update_rect_size()
-
+        self.width_mm = width_mm
+        self.height_mm = height_mm
+        self.rubberBand = None
+        self.setCursor(Qt.CrossCursor)
+        
     def set_target_scale(self, scale):
         self.target_scale = scale
-        self.update_rect_size()
-
-    def update_rect_size(self):
-        # Target size: 15cm width x 12cm height
-        world_width_m = 0.15 * self.target_scale
-        world_height_m = 0.12 * self.target_scale
-        
-        self.half_width_map_units = world_width_m / 2
-        self.half_height_map_units = world_height_m / 2
-
+    
+    def set_frame_size(self, width_mm, height_mm):
+        """Update frame dimensions"""
+        self.width_mm = width_mm
+        self.height_mm = height_mm
+    
     def canvasMoveEvent(self, event):
-        center = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
+        """Show preview rectangle following mouse"""
+        center = self.toMapCoordinates(event.pos())
+        
+        # Calculate rectangle size
+        world_width_m = (self.width_mm / 1000.0) * self.target_scale
+        world_height_m = (self.height_mm / 1000.0) * self.target_scale
+        
+        half_width = world_width_m / 2
+        half_height = world_height_m / 2
+        
         rect = QgsRectangle(
-            center.x() - self.half_width_map_units,
-            center.y() - self.half_height_map_units,
-            center.x() + self.half_width_map_units,
-            center.y() + self.half_height_map_units
+            center.x() - half_width,
+            center.y() - half_height,
+            center.x() + half_width,
+            center.y() + half_height
         )
-        self._draw_rubberband(rect)
-
+        
+        # Create or update rubber band
+        if not self.rubberBand:
+            self.rubberBand = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
+            self.rubberBand.setColor(QColor(255, 0, 0))
+            self.rubberBand.setWidth(2)
+            self.rubberBand.setFillColor(QColor(255, 64, 0, 40))
+        
+        self.rubberBand.setToGeometry(QgsGeometry.fromRect(rect), None)
+    
     def canvasReleaseEvent(self, event):
-        center = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos())
+        """Place rectangle at current mouse position"""
+        center = self.toMapCoordinates(event.pos())
+        
+        # Calculate final rectangle
+        world_width_m = (self.width_mm / 1000.0) * self.target_scale
+        world_height_m = (self.height_mm / 1000.0) * self.target_scale
+        
+        half_width = world_width_m / 2
+        half_height = world_height_m / 2
+        
         rect = QgsRectangle(
-            center.x() - self.half_width_map_units,
-            center.y() - self.half_height_map_units,
-            center.x() + self.half_width_map_units,
-            center.y() + self.half_height_map_units
+            center.x() - half_width,
+            center.y() - half_height,
+            center.x() + half_width,
+            center.y() + half_height
         )
+        
+        # Clean up rubber band
+        if self.rubberBand:
+            self.canvas.scene().removeItem(self.rubberBand)
+            self.rubberBand = None
+        
+        # Send result to callback
         self.callback(rect)
-        self.deactivate()
-        self.canvas.unsetMapTool(self)
-
-    def _draw_rubberband(self, rect):
-        if self.rb is None:
-            self.rb = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
-            self.rb.setColor(QColor(255, 0, 0))
-            self.rb.setWidth(2)
-            # Transparent red fill (alpha 40)
-            self.rb.setFillColor(QColor(255, 64, 0, 40))
-            self.rb.setLineStyle(Qt.SolidLine)
-
-        poly = QgsGeometry.fromRect(rect)
-        self.rb.setToGeometry(poly, None)
-
+    
     def deactivate(self):
-        if self.rb:
-            self.canvas.scene().removeItem(self.rb)
-            self.rb = None
+        """Clean up when tool is deactivated"""
+        if self.rubberBand:
+            self.canvas.scene().removeItem(self.rubberBand)
+            self.rubberBand = None
         super().deactivate()
 
 class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
@@ -523,7 +647,13 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.exportButton.clicked.connect(self.on_export_clicked)
         self.areaSelectButton.clicked.connect(self.on_area_select_clicked)
         
+        # Hide area select button - we use mode-specific buttons instead
+        # But KEEP export button visible to access the mode-selection dialog
+        self.areaSelectButton.setVisible(False)
+        
         self.current_geometry = None
+        self.current_mode = None  # Track which mode is active
+        self.current_dialog = None  # Store reference to open dialog
         self.selection_rb = None
         self.rect_tool = None
 
@@ -611,6 +741,23 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.current_geometry = rectangle
         self._draw_persistent_selection(rectangle)
         
+        # Show dialog again after area selection
+        if self.current_dialog:
+            self.current_dialog.show()
+            self.current_dialog.raise_()
+            self.current_dialog.activateWindow()
+        
+        # Enable export button for current mode (via dialog reference)
+        if self.current_dialog:
+            if self.current_mode == "batch":
+                self.current_dialog.btn_export_batch.setEnabled(True)
+            elif self.current_mode == "overlay":
+                self.current_dialog.btn_export_overlay.setEnabled(True)
+            elif self.current_mode == "layout":
+                self.current_dialog.btn_export_layout.setEnabled(True)
+            elif self.current_mode == "dxf":
+                self.current_dialog.btn_export_dxf.setEnabled(True)
+        
     def _draw_persistent_selection(self, rect):
         self._clear_selection_visual()
         self.selection_rb = QgsRubberBand(iface.mapCanvas(), QgsWkbTypes.PolygonGeometry)
@@ -623,35 +770,84 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         if self.selection_rb:
             iface.mapCanvas().scene().removeItem(self.selection_rb)
             self.selection_rb = None
+    
+    def on_area_select_mode(self, mode):
+        """Area selection for specific mode - resets area when switching modes"""
+        # Reset area selection if switching modes
+        if self.current_mode != mode:
+            self._clear_selection_visual()
+            self.current_geometry = None
+            # Disable all export buttons (via dialog reference)
+            if self.current_dialog:
+                self.current_dialog.btn_export_batch.setEnabled(False)
+                self.current_dialog.btn_export_overlay.setEnabled(False)
+                self.current_dialog.btn_export_layout.setEnabled(False)
+                self.current_dialog.btn_export_dxf.setEnabled(False)
+        
+        self.current_mode = mode
+        
+        # Hide dialog while selecting area on map
+        if self.current_dialog:
+            self.current_dialog.hide()
+            # Get page size from dialog
+            page_width, page_height = self.current_dialog.get_page_size()
+        else:
+            # Fallback to default if dialog not available
+            page_width, page_height = 150, 120
+        
+        scale = self.get_selected_scale()
+        self.rect_tool = FixedFrameTool(
+            iface.mapCanvas(),
+            scale,
+            self.process_selection,
+            width_mm=page_width,
+            height_mm=page_height
+        )
+        iface.mapCanvas().setMapTool(self.rect_tool)
 
     def on_export_clicked(self):
+        # Open export dialog - area selection check happens in mode-specific export buttons
+        # Dialog is modeless (non-blocking) so user can interact with map
+        dialog = LayerSelectDialog(self)
+        self.current_dialog = dialog  # Store reference for button access
+        
+        # Show modeless dialog (non-blocking)
+        dialog.show()
+    
+    def on_export_mode(self, mode):
+        """Export for specific mode - called from dialog's export buttons"""
         if not self.current_geometry:
             QtWidgets.QMessageBox.warning(self, "Fehler", "Bitte wählen Sie zuerst einen Bereich aus!")
             return
-
-        # 1. Export Settings Dialog
-        dialog = LayerSelectDialog(self)
-        # We execute the dialog, but we want to keep it open during export for progress bar.
-        # So we use a custom approach: if Accepted, we run logic, then close.
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
-            return
-            
-        # Re-open dialog for progress? Or just use it before it closes?
-        # exec_() blocks. Once it returns, the dialog is hidden.
-        # We need to implement the export logic *inside* the dialog or pass the dialog to the logic.
-        # Let's refactor slightly: We gather inputs, then show a progress dialog or use the main window status bar.
-        # User asked for a "loading bar like Microsoft download".
-        # Let's create a simple QProgressDialog.
         
-        mode = dialog.get_mode()
-        fmt = dialog.get_format()
-        dpi = dialog.get_dpi()
+        if not self.current_dialog:
+            return
+        
+        # Get ALL settings from dialog BEFORE closing it
+        fmt = self.current_dialog.get_format()
+        dpi = self.current_dialog.get_dpi()
         scale = self.get_selected_scale()
+        
+        # Get mode-specific data based on mode
+        if mode == "batch":
+            selected_ids = self.current_dialog.get_batch_layers()
+            page_width, page_height = self.current_dialog.get_page_size()
+        elif mode == "overlay":
+            cfg = self.current_dialog.get_overlay_config()
+            page_width, page_height = self.current_dialog.get_page_size()
+        elif mode == "layout":
+            cfg = self.current_dialog.get_layout_config()
+        elif mode == "dxf":
+            dxf_layer_ids = self.current_dialog.get_dxf_layers()
 
         # 2. Directory Selection
         out_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Speicherort wählen")
         if not out_dir:
             return
+
+        # Close dialog and clear reference AFTER reading all values
+        self.current_dialog.close()
+        self.current_dialog = None
 
         # Setup Progress Dialog
         progress = QtWidgets.QProgressDialog("Exportiere...", "Abbrechen", 0, 100, self)
@@ -659,9 +855,8 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
-        # 3. Export Logic
+        # 3. Export Logic based on mode
         if mode == "batch":
-            selected_ids = dialog.get_batch_layers()
             if not selected_ids:
                 QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Layer auswählen!")
                 return
@@ -683,7 +878,9 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                         out_dir=out_dir, 
                         fmt=fmt, 
                         dpi=dpi, 
-                        filename_prefix=layer.name()
+                        filename_prefix=layer.name(),
+                        page_width=page_width,
+                        page_height=page_height
                     )
                     count += 1
                 progress.setValue(i + 1)
@@ -692,7 +889,6 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 QtWidgets.QMessageBox.information(self, "Erfolg", f"{count} Dateien wurden exportiert.")
 
         elif mode == "overlay":
-            cfg = dialog.get_overlay_config()
             base_layer = QgsProject.instance().mapLayer(cfg["base_id"])
             overlay_ids = cfg["overlay_ids"]
             
@@ -718,22 +914,28 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                         out_dir=out_dir,
                         fmt=fmt,
                         dpi=dpi,
-                        filename_prefix=f"Overlay_{base_layer.name()}_{overlay_layer.name()}"
+                        filename_prefix=f"Overlay_{base_layer.name()}_{overlay_layer.name()}",
+                        page_width=page_width,
+                        page_height=page_height
                     )
                     count += 1
                 progress.setValue(i + 1)
-            
-            if not progress.wasCanceled():
                 QtWidgets.QMessageBox.information(self, "Erfolg", f"{count} Overlay-Bilder erfolgreich exportiert.")
             
         elif mode == "layout":
-            cfg = dialog.get_layout_config()
-            base_layer = QgsProject.instance().mapLayer(cfg["base_id"])
+            cfg = self.current_dialog.get_layout_config()
+            base_id = cfg["base_id"]
             overlay_ids = cfg["overlay_ids"]
+            template_path = cfg["template_path"]
+            opacity = cfg["opacity"]
+            debug_mode = cfg.get("debug_mode", False)
+            user_info = cfg.get("user_info", {})
             
-            if not base_layer: 
+            if not base_id: 
                  QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte Basis-Layer auswählen!")
                  return
+            
+            base_layer = QgsProject.instance().mapLayer(base_id)
             # Allow empty overlay_ids (user might want empty slots)
             # if not overlay_ids: ...
             
@@ -756,13 +958,11 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             
             if cfg["debug"]:
                 QtWidgets.QMessageBox.information(self, "Debug", "Layout wurde geöffnet. Bitte prüfe die Positionierung und schicke mir Screenshots!")
-            else:
                 if result:
                     QtWidgets.QMessageBox.information(self, "Erfolg", f"Layout erfolgreich gespeichert!")
         
         elif mode == "dxf":
-            # DXF Export Mode
-            dxf_layer_ids = dialog.get_dxf_layers()
+            dxf_layer_ids = self.current_dialog.get_dxf_layers()
             
             if not dxf_layer_ids:
                 QtWidgets.QMessageBox.information(self, "Hinweis", "Bitte mindestens einen Layer für DXF-Export auswählen!")
@@ -797,15 +997,15 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         
         progress.close()
 
-    def export_layout(self, layers, opacities, rectangle, scale, out_dir, fmt, dpi, filename_prefix):
+    def export_layout(self, layers, opacities, rectangle, scale, out_dir, fmt, dpi, filename_prefix, page_width=150, page_height=120):
         # Create a print layout
         project = QgsProject.instance()
         layout = QgsPrintLayout(project)
         layout.initializeDefaults()
         
-        # Set page size to 150mm x 120mm
+        # Set page size (now dynamic)
         page = layout.pageCollection().pages()[0]
-        page.setPageSize(QgsLayoutSize(150, 120, QgsUnitTypes.LayoutMillimeters))
+        page.setPageSize(QgsLayoutSize(page_width, page_height, QgsUnitTypes.LayoutMillimeters))
         
         # Add Maps (Stacked)
         # We add them in order. First layer is bottom.
@@ -813,7 +1013,7 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         
         for i, layer in enumerate(layers):
             map_item = QgsLayoutItemMap(layout)
-            map_item.setRect(QRectF(0, 0, 150, 120)) # Full page
+            map_item.setRect(QRectF(0, 0, page_width, page_height))  # Full page - now dynamic
             map_item.setLayers([layer])
             map_item.setExtent(rectangle)
             map_item.setScale(scale)
@@ -828,24 +1028,24 @@ class SnipperDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             if i == 0:
                 linked_map = map_item # Link decorations to base map
         
-        # Add Decorations
-        if decorations and linked_map:
-            # Scale Bar
+        # Add Decorations (with relative positioning)
+        if linked_map:
+            # Scale Bar - bottom left (5mm from left, 10mm from bottom)
             scale_bar = QgsLayoutItemScaleBar(layout)
             scale_bar.setStyle('Single Box')
             scale_bar.setLinkedMap(linked_map)
             scale_bar.applyDefaultSize()
-            scale_bar.attemptMove(QgsLayoutPoint(5, 110, QgsUnitTypes.LayoutMillimeters))
+            scale_bar.attemptMove(QgsLayoutPoint(5, page_height - 10, QgsUnitTypes.LayoutMillimeters))
             layout.addLayoutItem(scale_bar)
             
-            # North Arrow
+            # North Arrow - top right (15mm from right, 5mm from top)
             arrow = QgsLayoutItemPicture(layout)
             arrow.setPicturePath(":/images/north_arrows/layout_default_north_arrow.svg")
             arrow.attemptResize(QgsLayoutSize(10, 10, QgsUnitTypes.LayoutMillimeters))
-            arrow.attemptMove(QgsLayoutPoint(135, 5, QgsUnitTypes.LayoutMillimeters))
+            arrow.attemptMove(QgsLayoutPoint(page_width - 15, 5, QgsUnitTypes.LayoutMillimeters))
             layout.addLayoutItem(arrow)
             
-            # Label
+            # Label - top left (5mm from edges)
             label = QgsLayoutItemLabel(layout)
             label.setText(filename_prefix)
             label.setFont(QtGui.QFont("Arial", 10))
